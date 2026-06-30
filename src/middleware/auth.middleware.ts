@@ -1,5 +1,6 @@
 import { FastifyReply, FastifyRequest } from "fastify";
 import AppError from "../common/errors/app-error.js";
+import { Organization } from "../modules/organizations/models/organization.model.js";
 
 /**
  * Global authentication hook that verifies the JWT access token.
@@ -7,13 +8,62 @@ import AppError from "../common/errors/app-error.js";
 export async function authenticate(request: FastifyRequest, reply: FastifyReply) {
   try {
     await request.jwtVerify();
+
+    // Check if organization is suspended
+    const user = request.user as any;
+    if (user && user.organizationId) {
+      if (user.role !== "super_admin") {
+        const org = await Organization.findById(user.organizationId);
+        if (org && org.status === "Suspended") {
+          throw new AppError(
+            403,
+            "FORBIDDEN",
+            "Your organization has been suspended. Access denied."
+          );
+        }
+      }
+    }
   } catch (error: any) {
+    if (error instanceof AppError) {
+      throw error;
+    }
     const isExpired = error.code === "FST_JWT_AUTHORIZATION_TOKEN_EXPIRED";
     throw new AppError(
       401,
       isExpired ? "TOKEN_EXPIRED" : "UNAUTHORIZED",
       isExpired ? "Authentication token has expired" : "Authentication required"
     );
+  }
+}
+
+/**
+ * Optional authentication hook that parses the JWT token if available, but doesn't block guests.
+ */
+export async function optionalAuthenticate(request: FastifyRequest, reply: FastifyReply) {
+  try {
+    const authHeader = request.headers.authorization;
+    if (authHeader) {
+      await request.jwtVerify();
+      const user = request.user as any;
+      if (user && user.organizationId) {
+        if (user.role !== "super_admin") {
+          const org = await Organization.findById(user.organizationId);
+          if (org && org.status === "Suspended") {
+            throw new AppError(
+              403,
+              "FORBIDDEN",
+              "Your organization has been suspended. Access denied."
+            );
+          }
+        }
+      }
+    }
+  } catch (error: any) {
+    // If it's a tenant suspension error, propagate it
+    if (error instanceof AppError) {
+      throw error;
+    }
+    // Otherwise, ignore invalid/expired tokens for optional authentication
   }
 }
 
