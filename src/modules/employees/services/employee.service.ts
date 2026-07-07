@@ -222,6 +222,14 @@ export class EmployeeService {
       lastName: string;
       departmentId?: string;
       role?: string;
+      employeeId?: string;
+      designation?: string;
+      payrollCategory?: string;
+      employmentType?: "full_time" | "part_time" | "contractor" | "intern";
+      hireDate?: string | Date;
+      phone?: string;
+      location?: string;
+      timezone?: string;
     }>,
     creatorId: string | mongoose.Types.ObjectId
   ) {
@@ -257,12 +265,18 @@ export class EmployeeService {
             firstName: data.firstName,
             lastName: data.lastName,
             fullName: `${data.firstName} ${data.lastName}`.trim(),
+            phone: data.phone || undefined,
+            location: data.location || undefined,
+            timezone: data.timezone || undefined,
           },
           employment: {
+            employeeId: data.employeeId || undefined,
             departmentId: data.departmentId ? new mongoose.Types.ObjectId(data.departmentId) : undefined,
             status: "active" as const,
-            employmentType: "full_time" as const,
-            hireDate: new Date(),
+            employmentType: data.employmentType || ("full_time" as const),
+            designation: data.designation || undefined,
+            payrollCategory: data.payrollCategory || undefined,
+            hireDate: data.hireDate ? new Date(data.hireDate) : new Date(),
           },
           permissions: {
             role: (data.role || "employee") as any,
