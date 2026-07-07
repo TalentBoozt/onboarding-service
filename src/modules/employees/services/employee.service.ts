@@ -238,6 +238,11 @@ export class EmployeeService {
       failures: [] as Array<{ email: string; reason: string }>,
     };
 
+    const org = await Organization.findById(orgId);
+    if (!org) {
+      throw new AppError(404, "NOT_FOUND", "Organization not found");
+    }
+
     const defaultPasswordHash = await hashPassword("Welcome@2026!");
 
     for (const data of usersData) {
@@ -252,6 +257,33 @@ export class EmployeeService {
         if (existingEmail) {
           results.failures.push({ email, reason: "A user with this email address already exists." });
           continue;
+        }
+
+        // Resolve departmentId dynamically
+        let resolvedDeptId: mongoose.Types.ObjectId | undefined = undefined;
+        if (data.departmentId) {
+          const cleanDept = data.departmentId.trim();
+          if (mongoose.Types.ObjectId.isValid(cleanDept)) {
+            resolvedDeptId = new mongoose.Types.ObjectId(cleanDept);
+          } else {
+            // Find existing department by name
+            const matchedDept = org.departments.find(
+              (d) => d.name.toLowerCase() === cleanDept.toLowerCase()
+            );
+            if (matchedDept) {
+              resolvedDeptId = matchedDept._id;
+            } else {
+              // Create a new department with this name on the fly
+              const newDeptId = new mongoose.Types.ObjectId();
+              org.departments.push({
+                _id: newDeptId,
+                name: cleanDept,
+                active: true,
+              } as any);
+              await org.save();
+              resolvedDeptId = newDeptId;
+            }
+          }
         }
 
         const employeeObj = {
@@ -271,7 +303,7 @@ export class EmployeeService {
           },
           employment: {
             employeeId: data.employeeId || undefined,
-            departmentId: data.departmentId ? new mongoose.Types.ObjectId(data.departmentId) : undefined,
+            departmentId: resolvedDeptId,
             status: "active" as const,
             employmentType: data.employmentType || ("full_time" as const),
             designation: data.designation || undefined,
