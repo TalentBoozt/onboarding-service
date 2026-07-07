@@ -230,7 +230,7 @@ export class EmployeeService {
       failures: [] as Array<{ email: string; reason: string }>,
     };
 
-    const defaultPasswordHash = await hashPassword("123456");
+    const defaultPasswordHash = await hashPassword("Welcome@2026!");
 
     for (const data of usersData) {
       try {
