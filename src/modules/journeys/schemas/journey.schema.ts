@@ -49,11 +49,16 @@ const LessonSchema = z.object({
   contentBlocks: z.array(ContentBlockSchema).default([]),
   attachments: z.array(AttachmentSchema).default([]),
   quiz: QuizSchema.optional(),
-  completionRules: z.object({
-    requireContentCompletion: z.boolean().default(true),
-    requireQuizCompletion: z.boolean().default(false),
-    minimumQuizScore: z.number().min(0).max(100).optional(),
-  }),
+  completionRules: z
+    .object({
+      requireContentCompletion: z.boolean().default(true),
+      requireQuizCompletion: z.boolean().default(false),
+      minimumQuizScore: z.number().min(0).max(100).optional(),
+    })
+    .default({
+      requireContentCompletion: true,
+      requireQuizCompletion: false,
+    }),
 });
 
 const ModuleSchema = z.object({
@@ -78,6 +83,7 @@ export const createJourneySchema = z.object({
       isPublic: z.boolean().optional(),
     })
     .optional(),
+  modules: z.array(ModuleSchema).optional(),
   certificate: z
     .object({
       enabled: z.boolean(),
@@ -129,6 +135,42 @@ export const updateJourneySchema = z.object({
 
 export const duplicateJourneySchema = z.object({
   title: z.string().min(3, "New title must be at least 3 characters"),
+});
+
+export const updateTargetingSchema = z.object({
+  departments: z.array(z.string()).optional(),
+  departmentNames: z.array(z.string()).optional(),
+  jobTitles: z.array(z.string()).optional(),
+  jobTitleNames: z.array(z.string()).optional(),
+  locations: z.array(z.string()).optional(),
+  employmentTypes: z.array(z.string()).optional(),
+  startDateOffsetDays: z.number().min(0).optional(),
+  autoEnrollNewHires: z.boolean().optional(),
+  reassignmentPolicy: z.enum(["keep_progress", "reset_progress", "archive_previous"]).optional(),
+  isPublic: z.boolean().optional(),
+});
+
+export const previewSmartAssignmentSchema = z.object({});
+
+export const executeSmartAssignmentSchema = z.object({
+  overrideDueDate: z.string().datetime().optional(),
+});
+
+export const reorderCurriculumSchema = z.object({
+  moduleOrders: z.array(
+    z.object({
+      moduleId: z.string(),
+      order: z.number(),
+      lessonOrders: z
+        .array(
+          z.object({
+            lessonId: z.string(),
+            order: z.number(),
+          })
+        )
+        .optional(),
+    })
+  ),
 });
 
 

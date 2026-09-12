@@ -6,6 +6,7 @@ import { User } from "../../auth/models/user.model.js";
 import crypto from "crypto";
 import { EmailService } from "../../../shared/email/email.service.js";
 import { Organization } from "../../organizations/models/organization.model.js";
+import eventBus from "../../../infrastructure/events/event-bus.js";
 
 export class EmployeeService {
   constructor(private readonly employeeRepository: EmployeeRepository) { }
@@ -131,12 +132,13 @@ export class EmployeeService {
         fullName: `${invitationData.firstName} ${invitationData.lastName}`.trim(),
       },
       employment: {
-        departmentId: invitationData.departmentId ? new mongoose.Types.ObjectId(invitationData.departmentId) : undefined,
-        teamId: invitationData.teamId ? new mongoose.Types.ObjectId(invitationData.teamId) : undefined,
-        jobTitleId: invitationData.jobTitleId ? new mongoose.Types.ObjectId(invitationData.jobTitleId) : undefined,
+        department: (invitationData as any).department || (!mongoose.Types.ObjectId.isValid(invitationData.departmentId || "") ? invitationData.departmentId : undefined),
+        departmentId: invitationData.departmentId && mongoose.Types.ObjectId.isValid(invitationData.departmentId) ? new mongoose.Types.ObjectId(invitationData.departmentId) : undefined,
+        teamId: invitationData.teamId && mongoose.Types.ObjectId.isValid(invitationData.teamId) ? new mongoose.Types.ObjectId(invitationData.teamId) : undefined,
+        jobTitleId: invitationData.jobTitleId && mongoose.Types.ObjectId.isValid(invitationData.jobTitleId) ? new mongoose.Types.ObjectId(invitationData.jobTitleId) : undefined,
         designation: invitationData.designation,
         payrollCategory: invitationData.payrollCategory,
-        managerId: invitationData.managerId ? new mongoose.Types.ObjectId(invitationData.managerId) : undefined,
+        managerId: invitationData.managerId && mongoose.Types.ObjectId.isValid(invitationData.managerId) ? new mongoose.Types.ObjectId(invitationData.managerId) : undefined,
         employmentType: invitationData.employmentType,
         hireDate: invitationData.hireDate ? new Date(invitationData.hireDate) : new Date(),
         status: "invited" as const,
@@ -164,6 +166,23 @@ export class EmployeeService {
     // Send invitation email using EmailService
     const emailService = new EmailService();
     await emailService.sendInvitationEmail(email, rawToken, orgName);
+
+    // Publish USER_CREATED event to trigger workflows, auto-enrollment, documents, milestones, buddy, calendar
+    await eventBus.publish({
+      eventName: "USER_CREATED",
+      organizationId: orgId,
+      actorId: createdUser._id,
+      entityId: createdUser._id,
+      payload: {
+        userId: createdUser._id.toString(),
+        email: createdUser.auth.email,
+        role: createdUser.permissions.role,
+        department: invitationData.departmentId || createdUser.employment?.department,
+        firstName: createdUser.profile.firstName,
+        lastName: createdUser.profile.lastName,
+        invitedBy: invitedBy.toString(),
+      },
+    });
 
     return createdUser;
   }
@@ -218,9 +237,12 @@ export class EmployeeService {
     orgId: string | mongoose.Types.ObjectId,
     usersData: Array<{
       email: string;
-      firstName: string;
-      lastName: string;
+      firstName?: string;
+      lastName?: string;
+      fullName?: string;
+      department?: string;
       departmentId?: string;
+      jobTitle?: string;
       role?: string;
       employeeId?: string;
       designation?: string;
@@ -279,28 +301,52 @@ export class EmployeeService {
       }
       inFlightEmailSet.add(email);
 
-      // Resolve departmentId dynamically
+      // Name resolution
+      let firstName = data.firstName?.trim() || "";
+      let lastName = data.lastName?.trim() || "";
+      const rawFullName = data.fullName?.trim() || "";
+
+      if (!firstName && rawFullName) {
+        const parts = rawFullName.split(/\s+/);
+        firstName = parts[0] || "Employee";
+        lastName = parts.slice(1).join(" ") || "";
+      } else if (!rawFullName && (firstName || lastName)) {
+        // keep firstName & lastName
+      }
+      const fullName = rawFullName || `${firstName} ${lastName}`.trim() || "Employee";
+
+      // Department resolution
+      const deptCandidate = (data.department || data.departmentId || "").trim();
       let resolvedDeptId: mongoose.Types.ObjectId | undefined = undefined;
-      if (data.departmentId) {
-        const cleanDept = data.departmentId.trim();
-        if (mongoose.Types.ObjectId.isValid(cleanDept) && deptMap.has(cleanDept)) {
-          resolvedDeptId = deptMap.get(cleanDept);
-        } else if (deptMap.has(cleanDept.toLowerCase())) {
-          resolvedDeptId = deptMap.get(cleanDept.toLowerCase());
+      let cleanDeptName: string | undefined = undefined;
+
+      if (deptCandidate) {
+        if (mongoose.Types.ObjectId.isValid(deptCandidate) && deptMap.has(deptCandidate)) {
+          resolvedDeptId = deptMap.get(deptCandidate);
+          const found = org.departments.find((d) => d._id.toString() === deptCandidate);
+          cleanDeptName = found?.name || deptCandidate;
+        } else if (deptMap.has(deptCandidate.toLowerCase())) {
+          resolvedDeptId = deptMap.get(deptCandidate.toLowerCase());
+          const found = org.departments.find((d) => d.name.toLowerCase() === deptCandidate.toLowerCase());
+          cleanDeptName = found?.name || deptCandidate;
         } else {
           // Create new department on the fly
           const newDeptId = new mongoose.Types.ObjectId();
           org.departments.push({
             _id: newDeptId,
-            name: cleanDept,
+            name: deptCandidate,
             active: true,
           } as any);
-          deptMap.set(cleanDept.toLowerCase(), newDeptId);
+          deptMap.set(deptCandidate.toLowerCase(), newDeptId);
           deptMap.set(newDeptId.toString(), newDeptId);
           resolvedDeptId = newDeptId;
+          cleanDeptName = deptCandidate;
           orgModified = true;
         }
       }
+
+      const designation = data.designation || data.jobTitle || undefined;
+      const jobTitle = data.jobTitle || data.designation || undefined;
 
       documentsToInsert.push({
         organizationId: new mongoose.Types.ObjectId(orgId),
@@ -310,19 +356,21 @@ export class EmployeeService {
           emailVerified: true,
         },
         profile: {
-          firstName: data.firstName,
-          lastName: data.lastName,
-          fullName: `${data.firstName} ${data.lastName}`.trim(),
+          firstName: firstName || "Employee",
+          lastName: lastName || "",
+          fullName,
           phone: data.phone || undefined,
           location: data.location || undefined,
           timezone: data.timezone || undefined,
         },
         employment: {
           employeeId: data.employeeId || undefined,
+          department: cleanDeptName,
           departmentId: resolvedDeptId,
           status: "active" as const,
           employmentType: data.employmentType || ("full_time" as const),
-          designation: data.designation || undefined,
+          designation,
+          jobTitle,
           payrollCategory: data.payrollCategory || undefined,
           hireDate: data.hireDate ? new Date(data.hireDate) : new Date(),
         },
@@ -341,19 +389,52 @@ export class EmployeeService {
 
     // Save updated departments once if new departments were added
     if (orgModified) {
-      await org.save();
+      await Organization.updateOne(
+        { _id: org._id },
+        { $set: { departments: org.departments } }
+      );
     }
 
-    // 3. Batch insert users in chunks of 250
+    // 3. Batch insert users in chunks of 250 and emit events
     const BATCH_SIZE = 250;
     for (let i = 0; i < documentsToInsert.length; i += BATCH_SIZE) {
       const batch = documentsToInsert.slice(i, i + BATCH_SIZE);
       try {
         const inserted = await User.insertMany(batch, { ordered: false });
         results.successCount += inserted.length;
+        for (const userDoc of inserted) {
+          eventBus.publish({
+            eventName: "USER_CREATED",
+            organizationId: orgId,
+            actorId: userDoc._id,
+            entityId: userDoc._id,
+            payload: {
+              userId: userDoc._id.toString(),
+              email: userDoc.auth.email,
+              role: userDoc.permissions.role,
+              department: userDoc.employment?.departmentId?.toString() || userDoc.employment?.department,
+              jobTitle: userDoc.employment?.designation || userDoc.employment?.jobTitle,
+            },
+          }).catch((err) => console.error("Event publish error:", err));
+        }
       } catch (err: any) {
         if (err.insertedDocs && Array.isArray(err.insertedDocs)) {
           results.successCount += err.insertedDocs.length;
+          for (const userDoc of err.insertedDocs) {
+            eventBus.publish({
+              eventName: "USER_CREATED",
+              organizationId: orgId,
+              actorId: userDoc._id,
+              entityId: userDoc._id,
+              payload: {
+                userId: userDoc._id.toString(),
+                email: userDoc.auth.email,
+                role: userDoc.permissions.role,
+                department: userDoc.employment?.departmentId?.toString() || userDoc.employment?.department,
+                jobTitle: userDoc.employment?.designation || userDoc.employment?.jobTitle,
+              },
+            }).catch((e) => console.error("Event publish error:", e));
+          }
         }
         if (err.writeErrors && Array.isArray(err.writeErrors)) {
           for (const we of err.writeErrors) {

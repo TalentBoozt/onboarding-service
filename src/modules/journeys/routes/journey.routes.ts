@@ -81,6 +81,51 @@ export async function journeyRoutes(app: FastifyInstance) {
     { preHandler: [requireRole(["owner", "admin", "manager"])] },
     controller.getJourneyAnalytics as any
   );
+
+  // POST /api/v1/journeys/:id/assignment-preview
+  app.post(
+    "/:id/assignment-preview",
+    { preHandler: [requireRole(["owner", "admin"])] },
+    controller.previewSmartAssignment as any
+  );
+
+  // POST /api/v1/journeys/:id/smart-assign
+  app.post(
+    "/:id/smart-assign",
+    { preHandler: [requireRole(["owner", "admin"])] },
+    controller.executeSmartAssignment as any
+  );
+
+  // PATCH /api/v1/journeys/:id/targeting
+  app.patch(
+    "/:id/targeting",
+    { preHandler: [requireRole(["owner", "admin"])] },
+    controller.updateTargeting as any
+  );
+
+  // GET /api/v1/journeys/:id/prerequisites-check
+  app.get("/:id/prerequisites-check", controller.checkPrerequisites as any);
+
+  // POST /api/v1/journeys/:id/clone
+  app.post(
+    "/:id/clone",
+    { preHandler: [requireRole(["owner", "admin"])] },
+    controller.cloneJourney as any
+  );
+
+  // PUT /api/v1/journeys/:id/reorder
+  app.put(
+    "/:id/reorder",
+    { preHandler: [requireRole(["owner", "admin"])] },
+    controller.reorderCurriculum as any
+  );
+
+  // POST /api/v1/journeys/reminders/dispatch
+  app.post(
+    "/reminders/dispatch",
+    { preHandler: [requireRole(["owner", "admin"])] },
+    controller.dispatchReminders as any
+  );
 }
 
 export default journeyRoutes;
