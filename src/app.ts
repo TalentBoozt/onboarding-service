@@ -30,11 +30,29 @@ import { superAdminRoutes } from "./modules/super-admin/routes/super-admin.route
 import { analyticsRoutes } from "./modules/analytics/index.js";
 import { localizationRoutes } from "./modules/localization/index.js";
 import { kioskRoutes } from "./modules/kiosk/index.js";
+import { taskRoutes } from "./modules/tasks/index.js";
+import { workflowRoutes } from "./modules/workflows/index.js";
+import { managerRoutes } from "./modules/manager/routes/manager.routes.js";
+import { documentRoutes } from "./modules/documents/routes/document.routes.js";
+import { milestoneRoutes } from "./modules/milestones/routes/milestone.routes.js";
+import { ssoRoutes } from "./modules/auth/routes/sso.routes.js";
+import { hrisIntegrationRoutes } from "./modules/integrations/routes/hris-integration.routes.js";
+import { officeLocationRoutes } from "./modules/locations/routes/office-location.routes.js";
+import { buddyRoutes } from "./modules/buddy/routes/buddy.routes.js";
+import { calendarRoutes } from "./modules/calendar/routes/calendar.routes.js";
+import { hrOperationsRoutes } from "./modules/hr/routes/hr-operations.routes.js";
+import { gamificationRoutes } from "./modules/gamification/routes/gamification.routes.js";
+import { aiAssistantRoutes } from "./modules/ai/routes/ai-assistant.routes.js";
+import { certificateRoutes } from "./modules/certificates/routes/certificate.routes.js";
+import { registerAssignmentSubscribers } from "./modules/assignments/subscribers/assignment.subscriber.js";
+import { registerEventSubscribers } from "./infrastructure/events/event-subscribers.js";
 
 export async function buildApp() {
+  registerAssignmentSubscribers();
+  registerEventSubscribers();
   const app = Fastify({
     logger: loggerConfig,
-    disableRequestLogging: true, // We will use custom request/response lifecycle logging
+    disableRequestLogging: true, // Custom request/response lifecycle logging in logging.middleware.ts
     bodyLimit: 50 * 1024 * 1024, // 50MB body limit for bulk operations
   });
 
@@ -60,12 +78,16 @@ export async function buildApp() {
 
   // Register routes
   await app.register(authRoutes, { prefix: "/api/v1/auth" });
+  await app.register(ssoRoutes, { prefix: "/api/v1/auth/sso" });
+  await app.register(hrisIntegrationRoutes, { prefix: "/api/v1/integrations" });
+  await app.register(officeLocationRoutes, { prefix: "/api/v1/locations" });
   await app.register(organizationRoutes, { prefix: "/api/v1/organizations" });
   await app.register(employeeRoutes, { prefix: "/api/v1/employees" });
-  await app.register(employeeRoutes, { prefix: "/api/v1/users" });
   await app.register(journeyRoutes, { prefix: "/api/v1/journeys" });
+  await app.register(journeyRoutes, { prefix: "/api/v1/courses" });
   await app.register(assignmentRoutes, { prefix: "/api/v1/assignments" });
   await app.register(knowledgeBaseRoutes, { prefix: "/api/v1/knowledge-base" });
+  await app.register(knowledgeBaseRoutes, { prefix: "/api/v1/kb" });
   await app.register(uploadRoutes, { prefix: "/api/v1/uploads" });
   await app.register(notificationRoutes, { prefix: "/api/v1/notifications" });
   await app.register(auditLogRoutes, { prefix: "/api/v1/audit-logs" });
@@ -73,6 +95,17 @@ export async function buildApp() {
   await app.register(analyticsRoutes, { prefix: "/api/v1/analytics" });
   await app.register(localizationRoutes, { prefix: "/api/v1/localization" });
   await app.register(kioskRoutes, { prefix: "/api/v1/kiosk" });
+  await app.register(taskRoutes, { prefix: "/api/v1/tasks" });
+  await app.register(workflowRoutes, { prefix: "/api/v1/workflows" });
+  await app.register(managerRoutes, { prefix: "/api/v1/manager" });
+  await app.register(documentRoutes, { prefix: "/api/v1/documents" });
+  await app.register(milestoneRoutes, { prefix: "/api/v1/milestones" });
+  await app.register(buddyRoutes, { prefix: "/api/v1/buddy" });
+  await app.register(calendarRoutes, { prefix: "/api/v1/calendar" });
+  await app.register(hrOperationsRoutes, { prefix: "/api/v1/hr" });
+  await app.register(gamificationRoutes, { prefix: "/api/v1/gamification" });
+  await app.register(aiAssistantRoutes, { prefix: "/api/v1/ai" });
+  await app.register(certificateRoutes, { prefix: "/api/v1/certificates" });
 
   // Health checks
   app.get("/live", async () => {

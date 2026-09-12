@@ -31,16 +31,25 @@ export class KioskSecurityService {
       return false;
     }
 
-    // 2. Generate expected signature and compare
-    const expectedSig = this.generateSignature(journeyId, orgId, exp, secret);
-    return crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expectedSig, "hex"));
+    // 2. Generate expected signature and compare safely
+    try {
+      const expectedSig = this.generateSignature(journeyId, orgId, exp, secret);
+      const sigBuf = Buffer.from(sig, "hex");
+      const expBuf = Buffer.from(expectedSig, "hex");
+      if (sigBuf.length !== expBuf.length || sigBuf.length === 0) {
+        return false;
+      }
+      return crypto.timingSafeEqual(sigBuf, expBuf);
+    } catch {
+      return false;
+    }
   }
 
   /**
    * Generates a secure, 6-digit numeric pairing code for a physical device registration stream.
-   * Codes expire after ttlMs (default 5 minutes).
+   * Codes expire after ttlMs (default 15 minutes / 900000 ms).
    */
-  generatePairingCode(orgId: string, deviceId: string, ttlMs: number = 300000): string {
+  generatePairingCode(orgId: string, deviceId: string, ttlMs = 900000): string {
     // Generate a 6-digit random code string
     let code: string;
     do {

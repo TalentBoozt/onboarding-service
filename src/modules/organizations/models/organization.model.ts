@@ -9,6 +9,7 @@ export interface IUploadReference {
 export interface IDepartment {
   _id: mongoose.Types.ObjectId;
   name: string;
+  code?: string;
   description?: string;
   color?: string;
   active: boolean;
@@ -38,13 +39,25 @@ export interface ILocation {
 export interface IOrganization extends Document {
   name: string;
   slug: string;
+  domain?: string;
   description?: string;
   website?: string;
   industry?: string;
   size?: "1-10" | "11-50" | "51-250" | "251-1000" | "1000+";
   supportEmail?: string;
   status: "Active" | "Suspended";
-  plan: "Starter" | "Growth" | "Enterprise";
+  plan: "Starter" | "Growth" | "Professional" | "Enterprise";
+  subscription?: {
+    plan?: string;
+    status?: string;
+    seatLimit?: number;
+    billingCycle?: string;
+    renewsAt?: Date;
+  };
+  limits?: {
+    maxUsers?: number;
+    maxStorageGb?: number;
+  };
   branding: {
     logo?: IUploadReference;
     favicon?: IUploadReference;
@@ -85,6 +98,19 @@ export interface IOrganization extends Document {
     signatoryName?: string;
     signatoryTitle?: string;
   };
+  ssoConfig?: {
+    enabled: boolean;
+    provider?: string;
+    domain?: string;
+    domains?: string[];
+    entryPoint?: string;
+    ssoUrl?: string;
+    issuerId?: string;
+    issuerUrl?: string;
+    certificate?: string;
+    enforceSSO?: boolean;
+    status?: "active" | "disabled";
+  };
   createdBy: mongoose.Types.ObjectId;
   updatedBy?: mongoose.Types.ObjectId;
   isDeleted: boolean;
@@ -102,6 +128,7 @@ const UploadReferenceSchema = new Schema({
 
 const DepartmentSchema = new Schema({
   name: { type: String, required: true, trim: true },
+  code: { type: String, trim: true },
   description: { type: String },
   color: { type: String },
   active: { type: Boolean, default: true },
@@ -129,6 +156,7 @@ const OrganizationSchema = new Schema<IOrganization>(
   {
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    domain: { type: String, lowercase: true, trim: true },
     description: { type: String },
     website: { type: String },
     industry: { type: String },
@@ -138,7 +166,18 @@ const OrganizationSchema = new Schema<IOrganization>(
     },
     supportEmail: { type: String, lowercase: true, trim: true },
     status: { type: String, enum: ["Active", "Suspended"], default: "Active" },
-    plan: { type: String, enum: ["Starter", "Growth", "Enterprise"], default: "Starter" },
+    plan: { type: String, enum: ["Starter", "Growth", "Professional", "Enterprise"], default: "Starter" },
+    subscription: {
+      plan: { type: String, default: "Starter" },
+      status: { type: String, default: "active" },
+      seatLimit: { type: Number, default: 50 },
+      billingCycle: { type: String, default: "monthly" },
+      renewsAt: { type: Date }
+    },
+    limits: {
+      maxUsers: { type: Number, default: 50 },
+      maxStorageGb: { type: Number, default: 10 }
+    },
     branding: {
       logo: { type: UploadReferenceSchema },
       favicon: { type: UploadReferenceSchema },
@@ -179,6 +218,19 @@ const OrganizationSchema = new Schema<IOrganization>(
       signatoryName: { type: String },
       signatoryTitle: { type: String },
     },
+    ssoConfig: {
+      enabled: { type: Boolean, default: false },
+      provider: { type: String, default: "okta" },
+      domain: { type: String },
+      domains: { type: [String], default: [] },
+      entryPoint: { type: String },
+      ssoUrl: { type: String },
+      issuerId: { type: String },
+      issuerUrl: { type: String },
+      certificate: { type: String },
+      enforceSSO: { type: Boolean, default: false },
+      status: { type: String, enum: ["active", "disabled"], default: "disabled" },
+    },
     createdBy: { type: Schema.Types.ObjectId, required: true },
     updatedBy: { type: Schema.Types.ObjectId },
     isDeleted: { type: Boolean, default: false },
@@ -191,7 +243,6 @@ const OrganizationSchema = new Schema<IOrganization>(
 );
 
 // Indexes
-OrganizationSchema.index({ slug: 1 }, { unique: true });
 OrganizationSchema.index({ name: 1 });
 OrganizationSchema.index({ isDeleted: 1 });
 

@@ -80,9 +80,15 @@ export interface IJourney extends Document {
   tags: string[];
   audience: {
     departments?: mongoose.Types.ObjectId[];
+    departmentNames?: string[];
     teams?: mongoose.Types.ObjectId[];
     jobTitles?: mongoose.Types.ObjectId[];
+    jobTitleNames?: string[];
+    locations?: string[];
     employmentTypes?: string[];
+    startDateOffsetDays?: number;
+    autoEnrollNewHires?: boolean;
+    reassignmentPolicy?: "keep_progress" | "reset_progress" | "archive_previous";
     isPublic?: boolean;
   };
   modules: IModule[];
@@ -108,6 +114,18 @@ export interface IJourney extends Document {
     requireSequentialCompletion: boolean;
     allowRetakes: boolean;
     maxRetakes?: number;
+  };
+  prerequisites?: mongoose.Types.ObjectId[];
+  conditionalBranches?: Array<{
+    minScore: number;
+    maxScore: number;
+    unlockJourneyId?: mongoose.Types.ObjectId;
+    message?: string;
+  }>;
+  dueDateRules?: {
+    type: "fixed" | "relative_hire" | "relative_enrollment";
+    offsetDays: number;
+    enforceGate?: boolean;
   };
   createdBy: mongoose.Types.ObjectId;
   updatedBy?: mongoose.Types.ObjectId;
@@ -204,9 +222,19 @@ const JourneySchema = new Schema<IJourney>(
     tags: { type: [String], default: [] },
     audience: {
       departments: { type: [Schema.Types.ObjectId], ref: "Organization.departments" },
+      departmentNames: { type: [String], default: [] },
       teams: { type: [Schema.Types.ObjectId], ref: "Organization.teams" },
       jobTitles: { type: [Schema.Types.ObjectId] },
-      employmentTypes: { type: [String] },
+      jobTitleNames: { type: [String], default: [] },
+      locations: { type: [String], default: [] },
+      employmentTypes: { type: [String], default: [] },
+      startDateOffsetDays: { type: Number, default: 0 },
+      autoEnrollNewHires: { type: Boolean, default: false },
+      reassignmentPolicy: {
+        type: String,
+        enum: ["keep_progress", "reset_progress", "archive_previous"],
+        default: "keep_progress",
+      },
       isPublic: { type: Boolean, default: false },
     },
     modules: { type: [ModuleSchema], default: [] },
@@ -236,6 +264,20 @@ const JourneySchema = new Schema<IJourney>(
       requireSequentialCompletion: { type: Boolean, default: true },
       allowRetakes: { type: Boolean, default: true },
       maxRetakes: { type: Number },
+    },
+    prerequisites: [{ type: Schema.Types.ObjectId, ref: "Journey" }],
+    conditionalBranches: [
+      {
+        minScore: { type: Number, required: true },
+        maxScore: { type: Number, required: true },
+        unlockJourneyId: { type: Schema.Types.ObjectId, ref: "Journey" },
+        message: { type: String },
+      },
+    ],
+    dueDateRules: {
+      type: { type: String, enum: ["fixed", "relative_hire", "relative_enrollment"], default: "relative_enrollment" },
+      offsetDays: { type: Number, default: 7 },
+      enforceGate: { type: Boolean, default: false },
     },
     createdBy: { type: Schema.Types.ObjectId, required: true, ref: "User" },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User" },

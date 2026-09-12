@@ -5,6 +5,9 @@ import { NotificationService } from "../../notifications/services/notification.s
 import { NotificationRepository } from "../../notifications/repositories/notification.repository.js";
 import AppError from "../../../common/errors/app-error.js";
 import mongoose from "mongoose";
+import DocumentAssignment from "../../documents/models/document-assignment.model.js";
+
+import eventBus from "../../../infrastructure/events/event-bus.js";
 
 export class EmployeeAssignmentService {
   constructor(private readonly repository: EmployeeAssignmentRepository) {}
@@ -129,12 +132,22 @@ export class EmployeeAssignmentService {
       console.error("Failed to log journey assignment audit log:", err);
     }
 
-    // Send assignment notification
+    // Publish event & dispatch notification
     try {
-      const notificationService = new NotificationService(new NotificationRepository());
-      await notificationService.notifyJourneyAssignment(orgId, employeeId, journey.title, doc._id as any, journeyId);
+      await eventBus.publish({
+        eventName: "JOURNEY_ASSIGNED",
+        organizationId: orgId,
+        actorId: employeeId,
+        entityId: doc._id as any,
+        payload: {
+          journeyId: journeyId.toString(),
+          assignmentId: (doc._id as any).toString(),
+          journeyTitle: journey.title,
+          assignedBy: assignedBy.toString(),
+        },
+      });
     } catch (e) {
-      console.error("Failed to dispatch assignment notification:", e);
+      console.error("Failed to publish journey assignment event:", e);
     }
 
     return doc;
@@ -221,9 +234,34 @@ export class EmployeeAssignmentService {
     moduleId: string,
     lessonId: string,
     timeSpentSeconds: number,
-    completedBlockIds: string[]
+    completedBlockIds: string[],
+    userId?: string | mongoose.Types.ObjectId,
+    userRole?: string
   ) {
     const assignment = await this.getAssignment(id, orgId);
+
+    // Authorization: Employees cannot mutate another user's assignment
+    if (userRole === "employee" && userId) {
+      if (assignment.employeeId.toString() !== userId.toString()) {
+        throw new AppError(403, "FORBIDDEN", "Unauthorized. You cannot mutate another user's assignment.");
+      }
+    }
+
+    // Verify mandatory compliance documents if assigned
+    const pendingComplianceDocs = await DocumentAssignment.countDocuments({
+      organizationId: orgId,
+      employeeId: assignment.employeeId,
+      status: { $ne: "signed" },
+      isDeleted: false,
+    });
+    if (pendingComplianceDocs > 0) {
+      throw new AppError(
+        403,
+        "COMPLIANCE_PREREQUISITE_REQUIRED",
+        "Mandatory compliance documents must be reviewed and signed before completing learning modules."
+      );
+    }
+
     if (assignment.status === "assigned") {
       assignment.status = "in_progress";
     }
@@ -273,6 +311,31 @@ export class EmployeeAssignmentService {
         lesProg.status = "completed";
         lesProg.completedAt = new Date();
         assignment.progress.completedLessons++;
+
+        if (!assignment.completedLessonIds) {
+          assignment.completedLessonIds = [];
+        }
+        if (!assignment.completedLessonIds.includes(lessonId.toString())) {
+          assignment.completedLessonIds.push(lessonId.toString());
+        }
+
+        // Emit ON_STEP_COMPLETED event
+        try {
+          eventBus.publish({
+            eventName: "JOURNEY_COMPLETED" as any,
+            organizationId: orgId,
+            actorId: assignment.employeeId,
+            entityId: assignment._id as any,
+            payload: {
+              assignmentId: assignment._id.toString(),
+              lessonId: lessonId.toString(),
+              moduleId: moduleId.toString(),
+              event: "ON_STEP_COMPLETED"
+            }
+          }).catch(() => {});
+        } catch (evErr) {
+          // ignore event bus publish error
+        }
       }
     } else {
       lesProg.status = "in_progress";
@@ -339,6 +402,22 @@ export class EmployeeAssignmentService {
     submittedAnswers: Array<{ questionId: string; selectedOptions: string[] }>
   ) {
     const assignment = await this.getAssignment(id, orgId);
+
+    // Verify mandatory compliance documents if assigned
+    const pendingComplianceDocs = await DocumentAssignment.countDocuments({
+      organizationId: orgId,
+      employeeId: assignment.employeeId,
+      status: { $ne: "signed" },
+      isDeleted: false,
+    });
+    if (pendingComplianceDocs > 0) {
+      throw new AppError(
+        400,
+        "COMPLIANCE_PREREQUISITE_REQUIRED",
+        "Mandatory compliance documents must be reviewed and signed before completing learning quizzes."
+      );
+    }
+
     if (assignment.status === "assigned") {
       assignment.status = "in_progress";
     }
@@ -403,6 +482,11 @@ export class EmployeeAssignmentService {
 
     lesProg.quizAttempt = attempt;
 
+    if (!assignment.quizAttempts) {
+      assignment.quizAttempts = [];
+    }
+    assignment.quizAttempts.push(attempt);
+
     // Re-evaluate lesson completion with quiz rules
     let contentCompleted = true;
     if (origLes.completionRules.requireContentCompletion) {
@@ -438,6 +522,24 @@ export class EmployeeAssignmentService {
     await assignment.save();
     await this.updateUserStatistics(assignment.employeeId);
 
+    // Award gamification points upon passing quiz
+    if (passed) {
+      try {
+        const { GamificationService } = await import("../../gamification/services/gamification.service.js");
+        const gamificationService = new GamificationService();
+        await gamificationService.awardPoints(
+          orgId,
+          assignment.employeeId,
+          "quiz_completed",
+          50,
+          `Passed quiz in lesson "${lesProg.title}"`,
+          `quiz_${lesProg.lessonId}`
+        );
+      } catch (gErr) {
+        console.warn("Could not award gamification points for quiz:", gErr);
+      }
+    }
+
     // Create Audit Log for quiz submission
     try {
       const AuditLog = mongoose.model("AuditLog");
@@ -469,54 +571,120 @@ export class EmployeeAssignmentService {
       console.error("Failed to log submit quiz audit log:", err);
     }
 
-    return { passed, score, attempt };
+    return { score, passed, attemptsCount: currentAttemptNum, attempt };
   }
 
-  private async checkOverallCompletion(assignment: any, journey: any) {
-    const allModulesCompleted = assignment.modules.every((m: any) => m.completed);
-    if (allModulesCompleted) {
-      if (assignment.status !== "completed") {
+  public async checkOverallCompletion(assignment: any, journey: any) {
+    const allModulesCompleted = !assignment.modules || assignment.modules.length === 0 || assignment.modules.every((m: any) => m.completed);
+    
+    // Check mandatory tasks, e-signatures, and milestones for this employee
+    let pendingTasksCount = 0;
+    let unsignedDocsCount = 0;
+    let pendingMilestonesCount = 0;
+
+    try {
+      const TaskModel = mongoose.model("Task");
+      pendingTasksCount = await TaskModel.countDocuments({
+        organizationId: assignment.organizationId,
+        employeeId: assignment.employeeId,
+        status: { $ne: "completed" },
+        isDeleted: false,
+      });
+
+      const DocAssignmentModel = mongoose.model("DocumentAssignment");
+      unsignedDocsCount = await DocAssignmentModel.countDocuments({
+        organizationId: assignment.organizationId,
+        employeeId: assignment.employeeId,
+        status: { $ne: "signed" },
+        isDeleted: false,
+      });
+
+      const MilestoneModel = mongoose.model("EmployeeMilestone");
+      pendingMilestonesCount = await MilestoneModel.countDocuments({
+        organizationId: assignment.organizationId,
+        employeeId: assignment.employeeId,
+        status: { $ne: "completed" },
+        isDeleted: false,
+      });
+    } catch (err) {
+      console.error("Error evaluating cross-capability mandatory completion:", err);
+    }
+
+    const isFullyCompleted = allModulesCompleted && pendingTasksCount === 0 && unsignedDocsCount === 0 && pendingMilestonesCount === 0;
+
+    if (isFullyCompleted) {
+      const wasAlreadyCompleted = assignment.status === "completed";
+
+      if (!wasAlreadyCompleted) {
         assignment.status = "completed";
         assignment.completedAt = new Date();
-      }
 
-      if (journey.certificate?.enabled && !assignment.certificate?.issued) {
-        assignment.certificate = {
-          issued: true,
-          issuedAt: new Date(),
-          certificateId: new mongoose.Types.ObjectId(), // Generate certificate ID reference
-        };
-      }
-
-      // Update journey completions analytics
-      await Journey.updateOne(
-        { _id: journey._id },
-        {
-          $inc: { "analytics.totalCompletions": 1 },
+        if (journey.certificate?.enabled && !assignment.certificate?.issued) {
+          assignment.certificate = {
+            issued: true,
+            issuedAt: new Date(),
+            certificateId: new mongoose.Types.ObjectId(), // Generate certificate ID reference
+          };
         }
-      );
 
-      // Send completion notification
-      try {
-        const notificationService = new NotificationService(new NotificationRepository());
-        
-        // Fetch employee details to get their full name and manager
-        const employee = await mongoose.model("User").findById(assignment.employeeId);
-        const employeeName = employee ? `${employee.profile.firstName} ${employee.profile.lastName}` : "Employee";
-        
-        await notificationService.notifyJourneyCompletion(
-          assignment.organizationId,
-          assignment.employeeId,
-          employeeName,
-          journey.title,
-          assignment._id as any,
-          journey._id,
-          employee?.employment?.managerId
+        // Update journey completions analytics
+        await Journey.updateOne(
+          { _id: journey._id },
+          {
+            $inc: { "analytics.totalCompletions": 1 },
+          }
         );
-      } catch (e) {
-        console.error("Failed to dispatch completion notification:", e);
+
+        // Publish completion event (exactly once)
+        try {
+          const employee = await mongoose.model("User").findById(assignment.employeeId);
+          const employeeName = employee ? `${employee.profile.firstName} ${employee.profile.lastName}` : "Employee";
+          
+          await eventBus.publish({
+            eventName: "JOURNEY_COMPLETED",
+            organizationId: assignment.organizationId,
+            actorId: assignment.employeeId,
+            entityId: assignment._id,
+            payload: {
+              journeyId: journey._id.toString(),
+              assignmentId: assignment._id.toString(),
+              journeyTitle: journey.title,
+              employeeName,
+              managerUserId: employee?.employment?.managerId,
+            },
+          });
+        } catch (e) {
+          console.error("Failed to publish completion event:", e);
+        }
       }
     }
+  }
+
+  async evaluateEmployeeAssignments(
+    orgId: string | mongoose.Types.ObjectId,
+    employeeId: string | mongoose.Types.ObjectId
+  ) {
+    const orgObjectId = new mongoose.Types.ObjectId(orgId);
+    const empObjectId = new mongoose.Types.ObjectId(employeeId);
+
+    const result = await this.repository.find(
+      {
+        organizationId: orgObjectId,
+        employeeId: empObjectId,
+        status: { $in: ["assigned", "in_progress", "overdue"] } as any,
+      },
+      { page: 1, limit: 50 }
+    );
+
+    for (const assignment of result.assignments) {
+      const journey = await Journey.findOne({ _id: assignment.journey.journeyId, isDeleted: false });
+      if (journey) {
+        await this.checkOverallCompletion(assignment, journey);
+        await (assignment as any).save();
+      }
+    }
+
+    await this.updateUserStatistics(empObjectId);
   }
 
   async listAssignments(filter: AssignmentFilter, pagination: PaginationOptions) {
@@ -541,7 +709,7 @@ export class EmployeeAssignmentService {
     return assignment;
   }
 
-  private async updateUserStatistics(employeeId: mongoose.Types.ObjectId | string) {
+  async updateUserStatistics(employeeId: mongoose.Types.ObjectId | string) {
     const userId = new mongoose.Types.ObjectId(employeeId.toString());
     const EmployeeAssignment = mongoose.model("EmployeeAssignment");
     const assignments = await EmployeeAssignment.find({ employeeId: userId });
