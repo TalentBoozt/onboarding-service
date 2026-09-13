@@ -10,6 +10,7 @@ import {
   inviteEmployeeSchema,
   updateEmployeeSchema,
   importEmployeesSchema,
+  validateBulkImportSchema,
 } from "../schemas/employee.schema.js";
 
 export async function employeeRoutes(app: FastifyInstance) {
@@ -44,6 +45,15 @@ export async function employeeRoutes(app: FastifyInstance) {
   );
 
   app.post(
+    "/bulk/validate",
+    {
+      preHandler: [requireRole(["owner", "admin"])],
+      schema: { body: validateBulkImportSchema },
+    },
+    controller.validateBulkImport as any
+  );
+
+  app.post(
     "/import",
     {
       preHandler: [requireRole(["owner", "admin"])],
@@ -71,6 +81,12 @@ export async function employeeRoutes(app: FastifyInstance) {
     "/:id",
     { preHandler: [requireRole(["owner", "admin"])] },
     controller.deleteEmployee as any
+  );
+
+  app.post(
+    "/:id/legal-hold",
+    { preHandler: [requireRole(["owner", "admin"])] },
+    controller.setLegalHold as any
   );
 }
 

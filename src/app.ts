@@ -31,6 +31,7 @@ import { analyticsRoutes } from "./modules/analytics/index.js";
 import { localizationRoutes } from "./modules/localization/index.js";
 import { kioskRoutes } from "./modules/kiosk/index.js";
 import { taskRoutes } from "./modules/tasks/index.js";
+import { taskTemplateRoutes } from "./modules/tasks/routes/task-template.routes.js";
 import { workflowRoutes } from "./modules/workflows/index.js";
 import { managerRoutes } from "./modules/manager/routes/manager.routes.js";
 import { documentRoutes } from "./modules/documents/routes/document.routes.js";
@@ -44,6 +45,7 @@ import { hrOperationsRoutes } from "./modules/hr/routes/hr-operations.routes.js"
 import { gamificationRoutes } from "./modules/gamification/routes/gamification.routes.js";
 import { aiAssistantRoutes } from "./modules/ai/routes/ai-assistant.routes.js";
 import { certificateRoutes } from "./modules/certificates/routes/certificate.routes.js";
+import { onboardingRoutes } from "./modules/onboarding/routes/onboarding.routes.js";
 import { registerAssignmentSubscribers } from "./modules/assignments/subscribers/assignment.subscriber.js";
 import { registerEventSubscribers } from "./infrastructure/events/event-subscribers.js";
 
@@ -95,6 +97,7 @@ export async function buildApp() {
   await app.register(analyticsRoutes, { prefix: "/api/v1/analytics" });
   await app.register(localizationRoutes, { prefix: "/api/v1/localization" });
   await app.register(kioskRoutes, { prefix: "/api/v1/kiosk" });
+  await app.register(taskTemplateRoutes, { prefix: "/api/v1/tasks/templates" });
   await app.register(taskRoutes, { prefix: "/api/v1/tasks" });
   await app.register(workflowRoutes, { prefix: "/api/v1/workflows" });
   await app.register(managerRoutes, { prefix: "/api/v1/manager" });
@@ -106,6 +109,7 @@ export async function buildApp() {
   await app.register(gamificationRoutes, { prefix: "/api/v1/gamification" });
   await app.register(aiAssistantRoutes, { prefix: "/api/v1/ai" });
   await app.register(certificateRoutes, { prefix: "/api/v1/certificates" });
+  await app.register(onboardingRoutes, { prefix: "/api/v1/onboarding" });
 
   // Health checks
   app.get("/live", async () => {
