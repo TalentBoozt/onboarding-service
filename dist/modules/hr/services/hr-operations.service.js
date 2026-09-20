@@ -1,0 +1,536 @@
+import mongoose from "mongoose";
+import User from "../../auth/models/user.model.js";
+import EmployeeAssignment from "../../assignments/models/assignment.model.js";
+import DocumentAssignment from "../../documents/models/document-assignment.model.js";
+import EmployeeMilestone from "../../milestones/models/employee-milestone.model.js";
+import BuddyAssignment from "../../buddy/models/buddy-assignment.model.js";
+import Task from "../../tasks/models/task.model.js";
+import { Certificate, generateCertificateSignature } from "../../certificates/models/certificate.model.js";
+import { EventBus } from "../../../infrastructure/events/event-bus.js";
+import NotificationService from "../../notifications/services/notification.service.js";
+import NotificationRepository from "../../notifications/repositories/notification.repository.js";
+import AppError from "../../../common/errors/app-error.js";
+const notificationService = new NotificationService(new NotificationRepository());
+export class HROperationsService {
+    /**
+     * Get Unified HR Operational Dashboard Metrics (HR-001)
+     */
+    async getDashboardMetrics(orgId) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId);
+        const [totalEmployees, activeOnboardees, pausedOnboardees, journeyAssignments, pendingDocuments, overdueMilestones, unassignedBuddiesCount,] = await Promise.all([
+            User.countDocuments({ organizationId: orgObjectId, isDeleted: false }),
+            User.countDocuments({
+                organizationId: orgObjectId,
+                "permissions.role": "employee",
+                "employment.onboardingState": { $in: ["active", undefined] },
+                isDeleted: false,
+            }),
+            User.countDocuments({
+                organizationId: orgObjectId,
+                "employment.onboardingState": "paused",
+                isDeleted: false,
+            }),
+            EmployeeAssignment.find({ organizationId: orgObjectId, isDeleted: false }).select("status progress"),
+            DocumentAssignment.countDocuments({
+                organizationId: orgObjectId,
+                status: { $in: ["assigned", "sent", "viewed"] },
+                isDeleted: false,
+            }),
+            EmployeeMilestone.countDocuments({
+                organizationId: orgObjectId,
+                status: "overdue",
+                isDeleted: false,
+            }),
+            (async () => {
+                const employees = await User.find({
+                    organizationId: orgObjectId,
+                    "permissions.role": "employee",
+                    isDeleted: false,
+                }).select("_id");
+                const assignedBuddyUserIds = await BuddyAssignment.distinct("menteeUserId", {
+                    organizationId: orgObjectId,
+                    status: "active",
+                });
+                const assignedSet = new Set(assignedBuddyUserIds.map((id) => id.toString()));
+                return employees.filter((e) => !assignedSet.has(e._id.toString())).length;
+            })(),
+        ]);
+        const completedAssignmentsCount = journeyAssignments.filter((a) => a.status === "completed").length;
+        const journeyComplianceRate = journeyAssignments.length
+            ? Math.round((completedAssignmentsCount / journeyAssignments.length) * 100)
+            : 100;
+        return {
+            totalEmployees,
+            activeOnboardees,
+            pausedOnboardees,
+            journeyComplianceRate,
+            pendingDocuments,
+            overdueMilestones,
+            unassignedBuddiesCount,
+        };
+    }
+    /**
+     * Get Onboarding Exception & Risk Escalation Queue (HR-004)
+     */
+    async getExceptionQueue(orgId) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId);
+        const activeEmployees = await User.find({
+            organizationId: orgObjectId,
+            "permissions.role": "employee",
+            isDeleted: false,
+        }).select("_id profile auth employment createdAt");
+        const employeeIds = activeEmployees.map((e) => e._id);
+        const [overdueAssignments, pendingDocs, overdueTasks, buddyAssignments] = await Promise.all([
+            EmployeeAssignment.find({
+                organizationId: orgObjectId,
+                employeeId: { $in: employeeIds },
+                status: "overdue",
+                isDeleted: false,
+            }).populate("journey.journeyId", "title"),
+            DocumentAssignment.find({
+                organizationId: orgObjectId,
+                recipientUserId: { $in: employeeIds },
+                status: { $in: ["assigned", "sent"] },
+                dueDate: { $lt: new Date() },
+                isDeleted: false,
+            }),
+            Task.find({
+                organizationId: orgObjectId,
+                assigneeId: { $in: employeeIds },
+                status: "overdue",
+                isDeleted: false,
+            }),
+            BuddyAssignment.find({
+                organizationId: orgObjectId,
+                menteeUserId: { $in: employeeIds },
+                status: "active",
+            }),
+        ]);
+        const buddyMap = new Set(buddyAssignments.map((b) => b.menteeUserId.toString()));
+        const exceptions = [];
+        for (const emp of activeEmployees) {
+            const empIdStr = emp._id.toString();
+            const issues = [];
+            const empOverdueJourneys = overdueAssignments.filter((a) => a.employeeId.toString() === empIdStr);
+            if (empOverdueJourneys.length > 0) {
+                issues.push(`${empOverdueJourneys.length} overdue learning journey(s)`);
+            }
+            const empOverdueDocs = pendingDocs.filter((d) => d.recipientUserId.toString() === empIdStr);
+            if (empOverdueDocs.length > 0) {
+                issues.push(`${empOverdueDocs.length} overdue e-signature document(s)`);
+            }
+            const empOverdueTasks = overdueTasks.filter((t) => t.assigneeId?.toString() === empIdStr);
+            if (empOverdueTasks.length > 0) {
+                issues.push(`${empOverdueTasks.length} overdue onboarding task(s)`);
+            }
+            if (!buddyMap.has(empIdStr)) {
+                issues.push("No assigned onboarding buddy");
+            }
+            if (issues.length > 0) {
+                const riskLevel = issues.length >= 3 ? "critical" : issues.length === 2 ? "high" : "medium";
+                exceptions.push({
+                    employee: {
+                        _id: emp._id,
+                        name: `${emp.profile?.firstName} ${emp.profile?.lastName}`,
+                        email: emp.auth.email,
+                        department: emp.employment?.department || "Unassigned",
+                        jobTitle: emp.employment?.jobTitle || "Employee",
+                    },
+                    riskLevel,
+                    issues,
+                });
+            }
+        }
+        return exceptions;
+    }
+    /**
+     * Employee Lifecycle Controls & Offboarding/Pause Actions (HR-002)
+     */
+    async updateLifecycleState(orgId, targetUserId, state, reason, extensionDays) {
+        if (state === "completed") {
+            const res = await this.completeHandover(orgId, targetUserId, targetUserId, reason);
+            return res.user;
+        }
+        const orgObjectId = new mongoose.Types.ObjectId(orgId);
+        const userObjectId = new mongoose.Types.ObjectId(targetUserId);
+        const user = await User.findOne({
+            _id: userObjectId,
+            organizationId: orgObjectId,
+            isDeleted: false,
+        });
+        if (!user) {
+            throw new AppError(404, "NOT_FOUND", "Employee not found");
+        }
+        if (!user.employment) {
+            user.employment = {};
+        }
+        user.employment.onboardingState = state;
+        user.employment.onboardingStateReason = reason;
+        if (state === "paused") {
+            user.employment.onboardingPausedAt = new Date();
+        }
+        await user.save();
+        // Extend due dates if extensionDays requested
+        if (extensionDays && extensionDays > 0) {
+            const addedMs = extensionDays * 24 * 60 * 60 * 1000;
+            const activeAssignments = await EmployeeAssignment.find({
+                organizationId: orgObjectId,
+                employeeId: userObjectId,
+                status: { $in: ["assigned", "in_progress", "overdue"] },
+                isDeleted: false,
+            });
+            for (const assignment of activeAssignments) {
+                if (assignment.assignment?.dueDate) {
+                    assignment.assignment.dueDate = new Date(assignment.assignment.dueDate.getTime() + addedMs);
+                }
+                else {
+                    assignment.assignment.dueDate = new Date(Date.now() + addedMs);
+                }
+                if (assignment.status === "overdue") {
+                    assignment.status = "in_progress";
+                }
+                await assignment.save();
+            }
+        }
+        await notificationService.createNotification({
+            organizationId: orgId,
+            recipientUserId: targetUserId,
+            type: "system",
+            title: `Onboarding Status Updated: ${state.toUpperCase()}`,
+            message: `Your onboarding state was updated to "${state}". ${reason ? `Reason: ${reason}` : ""}`,
+            priority: "medium",
+        });
+        return user;
+    }
+    /**
+     * Authoritative Handover Sign-Off & Lifecycle Activation
+     */
+    async completeHandover(orgId, targetUserId, actorUserId, reason) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId);
+        let user = null;
+        let userObjectId = new mongoose.Types.ObjectId();
+        if (mongoose.Types.ObjectId.isValid(targetUserId)) {
+            userObjectId = new mongoose.Types.ObjectId(targetUserId);
+            user = await User.findOne({
+                _id: userObjectId,
+                organizationId: orgObjectId,
+                isDeleted: false,
+            });
+        }
+        if (!user) {
+            user = await User.findOne({
+                $or: [
+                    { "employment.employeeId": targetUserId },
+                    { "auth.email": targetUserId },
+                ],
+                organizationId: orgObjectId,
+                isDeleted: false,
+            });
+            if (user) {
+                userObjectId = user._id;
+            }
+        }
+        if (!user) {
+            throw new AppError(404, "NOT_FOUND", "Employee not found");
+        }
+        // Idempotency check: if employee is already active, return success without duplicate side-effects
+        if (user.employment?.status === "active" || user.employment?.onboardingState === "completed") {
+            const cert = await Certificate.findOne({
+                organizationId: orgObjectId,
+                employeeId: userObjectId,
+                status: "active",
+            });
+            return {
+                user,
+                certificate: cert,
+                certificateId: cert?._id?.toString(),
+                employeeStatus: "active",
+                alreadyActive: true,
+                message: "Employee is already active. Handover sign-off previously completed.",
+            };
+        }
+        // 1. Evaluate mandatory LMS modules
+        const activeAssignments = await EmployeeAssignment.find({
+            organizationId: orgObjectId,
+            employeeId: userObjectId,
+            isDeleted: false,
+        });
+        const incompleteModules = [];
+        for (const assignment of activeAssignments) {
+            if (assignment.status !== "completed") {
+                for (const mod of assignment.modules || []) {
+                    if (!mod.completed) {
+                        incompleteModules.push(`${assignment.journey.title}: ${mod.title}`);
+                    }
+                }
+            }
+        }
+        // 2. Evaluate mandatory tasks
+        const incompleteTasks = await Task.find({
+            organizationId: orgObjectId,
+            $or: [{ employeeId: userObjectId }, { assignedToUserId: userObjectId }],
+            status: { $ne: "completed" },
+            isDeleted: false,
+        }).select("title stage category");
+        // 3. Evaluate mandatory compliance documents
+        const unsignedDocuments = await DocumentAssignment.find({
+            organizationId: orgObjectId,
+            $or: [{ employeeId: userObjectId }, { recipientUserId: userObjectId }],
+            status: { $nin: ["signed", "completed"] },
+            isDeleted: false,
+        }).select("templateTitle status");
+        // 4. Evaluate mandatory milestones
+        const incompleteMilestones = await EmployeeMilestone.find({
+            organizationId: orgObjectId,
+            employeeId: userObjectId,
+            status: { $nin: ["completed", "approved"] },
+            isDeleted: false,
+        }).select("milestoneTitle status targetDay");
+        const hasIncompleteModules = incompleteModules.length > 0;
+        const hasIncompleteTasks = incompleteTasks.length > 0;
+        const hasUnsignedDocs = unsignedDocuments.length > 0;
+        const hasIncompleteMilestones = incompleteMilestones.length > 0;
+        if (hasIncompleteModules || hasIncompleteTasks || hasUnsignedDocs || hasIncompleteMilestones) {
+            throw new AppError(400, "ONBOARDING_INCOMPLETE", `Handover rejected. Mandatory onboarding requirements remain incomplete for ${user.profile?.firstName || "Employee"} ${user.profile?.lastName || ""}.`.trim(), {
+                error: "ONBOARDING_INCOMPLETE",
+                openTasks: incompleteTasks.length,
+                unsignedDocuments: unsignedDocuments.length,
+                incompleteModules: incompleteModules.length,
+                incompleteMilestones: incompleteMilestones.length,
+                incompleteTasks: incompleteTasks.map((t) => t.title),
+            });
+        }
+        // Update employment status to ACTIVE
+        if (!user.employment) {
+            user.employment = {};
+        }
+        user.employment.status = "active";
+        user.employment.onboardingState = "completed";
+        user.employment.onboardingStateReason = reason || "HR Operations Handover Sign-Off Completed";
+        // Issue verifiable Certificate
+        const existingCert = await Certificate.findOne({
+            organizationId: orgObjectId,
+            employeeId: userObjectId,
+            status: "active",
+        });
+        let certificate = existingCert;
+        if (!certificate) {
+            const org = await mongoose.model("Organization").findById(orgObjectId);
+            const certificateNumber = `CERT-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+            const issueDate = new Date();
+            const signature = generateCertificateSignature(certificateNumber, userObjectId.toString(), orgObjectId.toString(), issueDate);
+            certificate = await Certificate.create({
+                organizationId: orgObjectId,
+                employeeId: userObjectId,
+                assignmentId: activeAssignments[0]?._id,
+                certificateNumber,
+                recipientName: `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() ||
+                    user.auth?.email ||
+                    "Employee",
+                organizationName: org?.name || "Talnova",
+                journeyTitle: activeAssignments[0]?.journey?.title || "Comprehensive Employee Onboarding",
+                issueDate,
+                completionDate: issueDate,
+                sha256Signature: signature,
+                status: "active",
+                metadata: {
+                    handoverBy: actorUserId.toString(),
+                    reason: reason || "Unified Onboarding Handover Verified",
+                },
+            });
+        }
+        // Mark active assignments completed with certificate attached
+        for (const assignment of activeAssignments) {
+            assignment.status = "completed";
+            if (assignment.progress) {
+                assignment.progress.completionPercentage = 100;
+                assignment.progress.completedModules = assignment.progress.totalModules;
+                assignment.progress.completedLessons = assignment.progress.totalLessons;
+            }
+            assignment.completedAt = new Date();
+            assignment.certificate = {
+                issued: true,
+                issuedAt: new Date(),
+                certificateId: certificate._id,
+            };
+            await assignment.save();
+        }
+        // Increment user statistics
+        if (!user.statistics) {
+            user.statistics = {};
+        }
+        user.statistics.certificates = Math.max(1, (user.statistics?.certificates || 0) + 1);
+        await user.save();
+        // Create Audit Log
+        try {
+            const AuditLog = mongoose.model("AuditLog");
+            await AuditLog.create({
+                organizationId: orgObjectId,
+                actorUserId: new mongoose.Types.ObjectId(actorUserId),
+                actorType: "user",
+                eventCategory: "user",
+                eventType: "employee.handover_completed",
+                resourceType: "user",
+                resourceId: userObjectId,
+                action: "update",
+                description: `completed HR handover for ${user.profile?.firstName} ${user.profile?.lastName}`,
+                metadata: {
+                    targetUserId: targetUserId.toString(),
+                    reason,
+                    certificateId: certificate._id.toString(),
+                },
+                severity: "info",
+            });
+        }
+        catch (err) {
+            console.error("Failed to log handover audit log:", err);
+        }
+        // Publish event bus triggers
+        try {
+            const eventBus = EventBus.getInstance();
+            await eventBus.publish({
+                eventName: "JOURNEY_COMPLETED",
+                organizationId: orgObjectId,
+                actorId: actorUserId,
+                entityId: userObjectId,
+                payload: {
+                    employeeId: userObjectId,
+                    certificateId: certificate._id,
+                    certificateNumber: certificate.certificateNumber,
+                    journeyTitle: certificate.journeyTitle,
+                    recipientName: certificate.recipientName,
+                },
+            });
+            await eventBus.publish({
+                eventName: "ON_JOURNEY_COMPLETED",
+                organizationId: orgObjectId,
+                actorId: actorUserId,
+                entityId: userObjectId,
+                payload: {
+                    employeeId: userObjectId,
+                    certificateId: certificate._id,
+                    certificateNumber: certificate.certificateNumber,
+                },
+            });
+        }
+        catch (evtErr) {
+            console.error("Failed to publish journey completion event:", evtErr);
+        }
+        try {
+            await notificationService.createNotification({
+                organizationId: orgObjectId.toString(),
+                recipientUserId: userObjectId.toString(),
+                type: "system",
+                title: "Onboarding Completed & Account Activated!",
+                message: "Congratulations! Your onboarding handover sign-off has been verified and your profile status is now ACTIVE.",
+                priority: "high",
+            });
+        }
+        catch (notifErr) {
+            console.error("Failed to send handover notification:", notifErr);
+        }
+        return {
+            user,
+            certificate,
+            certificateId: certificate._id?.toString(),
+            employeeStatus: "active",
+            alreadyActive: false,
+            message: "Handover completed successfully, certificate generated, and employee activated.",
+        };
+    }
+    /**
+     * Bulk Employee Batch Operations (HR-003)
+     */
+    async executeBulkAction(orgId, actorUserId, action, employeeIds, payload) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId);
+        const recipientObjectIds = employeeIds.map((id) => new mongoose.Types.ObjectId(id));
+        let processedCount = 0;
+        if (action === "send_reminder") {
+            for (const empId of recipientObjectIds) {
+                await notificationService.createNotification({
+                    organizationId: orgId,
+                    recipientUserId: empId,
+                    type: "journey_assigned",
+                    title: "HR Onboarding Nudge",
+                    message: payload.message || "Please complete your pending onboarding tasks and learning journeys.",
+                    priority: "high",
+                });
+                processedCount++;
+            }
+        }
+        else if (action === "assign_journey" && payload.journeyId) {
+            const journeyObjectId = new mongoose.Types.ObjectId(payload.journeyId);
+            for (const empId of recipientObjectIds) {
+                const existing = await EmployeeAssignment.findOne({
+                    organizationId: orgObjectId,
+                    employeeId: empId,
+                    "journey.journeyId": journeyObjectId,
+                    isDeleted: false,
+                });
+                if (!existing) {
+                    await EmployeeAssignment.create({
+                        organizationId: orgObjectId,
+                        employeeId: empId,
+                        journeyId: journeyObjectId,
+                        journey: {
+                            journeyId: journeyObjectId,
+                            title: "Bulk Assigned Journey",
+                            version: 1,
+                        },
+                        assignedBy: new mongoose.Types.ObjectId(actorUserId),
+                        assignment: {
+                            assignedAt: new Date(),
+                            dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+                            priority: "normal",
+                        },
+                        status: "assigned",
+                        progress: {
+                            totalModules: 1,
+                            completedModules: 0,
+                            totalLessons: 1,
+                            completedLessons: 0,
+                            completionPercentage: 0,
+                            totalTimeSpentSeconds: 0,
+                        },
+                    });
+                    processedCount++;
+                }
+            }
+        }
+        return { processedCount };
+    }
+    /**
+     * Operational HR Audit Compliance Report (HR-005)
+     */
+    async generateComplianceReport(orgId) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId);
+        const employees = await User.find({
+            organizationId: orgObjectId,
+            "permissions.role": "employee",
+            isDeleted: false,
+        }).select("profile auth employment");
+        const assignments = await EmployeeAssignment.find({
+            organizationId: orgObjectId,
+            isDeleted: false,
+        });
+        const report = employees.map((emp) => {
+            const empAssignments = assignments.filter((a) => a.employeeId.toString() === emp._id.toString());
+            const completedCount = empAssignments.filter((a) => a.status === "completed").length;
+            const totalCount = empAssignments.length;
+            const completionRate = totalCount ? Math.round((completedCount / totalCount) * 100) : 100;
+            return {
+                employeeId: emp._id,
+                name: `${emp.profile?.firstName} ${emp.profile?.lastName}`,
+                email: emp.auth.email,
+                department: emp.employment?.department || "Unassigned",
+                onboardingState: emp.employment?.onboardingState || "active",
+                totalAssigned: totalCount,
+                totalCompleted: completedCount,
+                completionRate,
+            };
+        });
+        return report;
+    }
+}
+export const hrOperationsService = new HROperationsService();
+export default hrOperationsService;

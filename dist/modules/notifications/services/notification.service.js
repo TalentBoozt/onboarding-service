@@ -1,0 +1,243 @@
+import NotificationPreference from "../models/notification-preference.model.js";
+import PushSubscription from "../models/push-subscription.model.js";
+import AppError from "../../../common/errors/app-error.js";
+import mongoose from "mongoose";
+import EmailService from "../../../shared/email/email.service.js";
+import User from "../../auth/models/user.model.js";
+export class NotificationService {
+    repository;
+    emailService;
+    constructor(repository) {
+        this.repository = repository;
+        this.emailService = new EmailService();
+    }
+    calculateExpiration(priority) {
+        const days = priority === "critical" ? 365 : 180;
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + days);
+        return expiresAt;
+    }
+    async listNotifications(filter, pagination) {
+        return this.repository.find(filter, pagination);
+    }
+    async getUnreadCount(userId) {
+        return this.repository.countUnread(userId);
+    }
+    async markNotificationRead(id, userId) {
+        const notification = await this.repository.markAsRead(id, userId);
+        if (!notification) {
+            throw new AppError(404, "NOT_FOUND", "Notification not found or already read");
+        }
+        return notification;
+    }
+    async markAllRead(userId) {
+        return this.repository.markAllAsRead(userId);
+    }
+    async deleteNotification(id, userId) {
+        const notification = await this.repository.delete(id, userId);
+        if (!notification) {
+            throw new AppError(404, "NOT_FOUND", "Notification not found");
+        }
+        return notification;
+    }
+    async getPreferences(userId, orgId) {
+        let prefs = await NotificationPreference.findOne({ userId, organizationId: orgId });
+        if (!prefs) {
+            try {
+                prefs = await NotificationPreference.create({
+                    userId,
+                    organizationId: orgId,
+                    channels: { inApp: true, email: true },
+                    categories: {
+                        journeyAssigned: { inApp: true, email: true },
+                        journeyOverdue: { inApp: true, email: true },
+                        complianceDue: { inApp: true, email: true },
+                        announcements: { inApp: true, email: true },
+                        reminders: { inApp: true, email: true },
+                    },
+                    quietHours: { enabled: false },
+                    frequency: "immediate",
+                });
+            }
+            catch (err) {
+                if (err.code === 11000) {
+                    prefs = await NotificationPreference.findOne({ userId, organizationId: orgId });
+                }
+                else {
+                    throw err;
+                }
+            }
+        }
+        return prefs;
+    }
+    async updatePreferences(userId, orgId, data) {
+        const prefs = await NotificationPreference.findOneAndUpdate({ userId, organizationId: orgId }, { $set: data }, { new: true, upsert: true });
+        return prefs;
+    }
+    // Escalation & Frequency Rules Check (REM-005)
+    async shouldSuppressNotification(recipientUserId, type) {
+        // If overdue alert, suppress if another alert of same type was sent in last 24 hrs
+        if (type === "journey_overdue" || type === "journey_due_soon") {
+            const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+            const recent = await this.repository.find({
+                recipientUserId,
+                type,
+            }, { page: 1, limit: 1 });
+            if (recent.notifications.length > 0 && recent.notifications[0].createdAt > oneDayAgo) {
+                return true; // Suppress duplicate frequency
+            }
+        }
+        return false;
+    }
+    // Multi-channel delivery dispatcher (REM-003, REM-005)
+    async createNotification(data) {
+        // Check escalation & frequency throttling rules
+        const suppress = await this.shouldSuppressNotification(data.recipientUserId, data.type);
+        if (suppress) {
+            console.log(`[NotificationService] Suppressed notification ${data.type} to user ${data.recipientUserId} due to frequency escalation rules.`);
+            return null;
+        }
+        // Fetch user preferences
+        const prefs = await this.getPreferences(data.recipientUserId, data.organizationId);
+        const priority = data.priority || "medium";
+        const expiresAt = this.calculateExpiration(priority);
+        const channel = data.channel || "in_app";
+        // Determine category key for preference check
+        let categoryKey = "reminders";
+        if (data.type === "journey_assigned")
+            categoryKey = "journeyAssigned";
+        else if (data.type === "journey_overdue")
+            categoryKey = "journeyOverdue";
+        else if (data.type === "journey_due_soon")
+            categoryKey = "complianceDue";
+        else if (data.type === "announcement")
+            categoryKey = "announcements";
+        // Verify channel enabled in preferences
+        const isChannelEnabled = channel === "email"
+            ? prefs.channels.email && prefs.categories[categoryKey]?.email !== false
+            : prefs.channels.inApp && prefs.categories[categoryKey]?.inApp !== false;
+        if (!isChannelEnabled) {
+            console.log(`[NotificationService] Notification ${data.type} channel ${channel} disabled in recipient preferences.`);
+            return null;
+        }
+        const notificationData = {
+            organizationId: new mongoose.Types.ObjectId(data.organizationId),
+            recipientUserId: new mongoose.Types.ObjectId(data.recipientUserId),
+            type: data.type,
+            channel,
+            title: data.title,
+            message: data.message,
+            priority,
+            data: data.data
+                ? {
+                    journeyId: data.data.journeyId ? new mongoose.Types.ObjectId(data.data.journeyId) : undefined,
+                    assignmentId: data.data.assignmentId ? new mongoose.Types.ObjectId(data.data.assignmentId) : undefined,
+                    articleId: data.data.articleId ? new mongoose.Types.ObjectId(data.data.articleId) : undefined,
+                    actorUserId: data.data.actorUserId ? new mongoose.Types.ObjectId(data.data.actorUserId) : undefined,
+                    deepLink: data.data.deepLink,
+                }
+                : undefined,
+            status: "pending",
+            isRead: false,
+            expiresAt,
+        };
+        const notification = await this.repository.create(notificationData);
+        // Real Email Delivery Adapter
+        if (channel === "email") {
+            const recipientUser = await User.findById(data.recipientUserId).select("auth.email profile.firstName");
+            if (recipientUser && recipientUser.auth?.email) {
+                const html = `
+          <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+            <h2 style="color: #4f46e5; font-family: 'Inter', sans-serif;">${data.title}</h2>
+            <p>Hello ${recipientUser.profile?.firstName || ""},</p>
+            <p>${data.message}</p>
+            ${data.data?.deepLink ? `<div style="margin: 25px 0;"><a href="http://localhost:5173${data.data.deepLink}" style="background-color: #4f46e5; color: white; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold;">View Details</a></div>` : ""}
+            <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+            <p style="font-size: 12px; color: #64748b;">Talnova Onboarding Platform</p>
+          </div>
+        `;
+                const sent = await this.emailService.sendEmail(recipientUser.auth.email, data.title, html);
+                notification.status = sent ? "sent" : "failed";
+                if (sent)
+                    notification.deliveredAt = new Date();
+                await notification.save();
+            }
+        }
+        else {
+            notification.status = "sent";
+            notification.deliveredAt = new Date();
+            await notification.save();
+        }
+        return notification;
+    }
+    // Shortcut triggers
+    async notifyJourneyAssignment(orgId, recipientUserId, journeyTitle, assignmentId, journeyId) {
+        return this.createNotification({
+            organizationId: orgId,
+            recipientUserId,
+            type: "journey_assigned",
+            channel: "in_app",
+            title: "New Onboarding Journey Assigned",
+            message: `You have been assigned to the onboarding journey: "${journeyTitle}".`,
+            priority: "high",
+            data: {
+                journeyId,
+                assignmentId,
+                deepLink: `/employee/journeys/${assignmentId.toString()}`,
+            },
+        });
+    }
+    async notifyJourneyCompletion(orgId, actorUserId, employeeName, journeyTitle, assignmentId, journeyId, managerUserId) {
+        // Notify employee
+        await this.createNotification({
+            organizationId: orgId,
+            recipientUserId: actorUserId,
+            type: "journey_completed",
+            channel: "in_app",
+            title: "Congratulations! Journey Completed",
+            message: `You have successfully completed: "${journeyTitle}".`,
+            priority: "medium",
+            data: { journeyId, assignmentId },
+        });
+        // Notify manager if exists
+        if (managerUserId) {
+            await this.createNotification({
+                organizationId: orgId,
+                recipientUserId: managerUserId,
+                type: "journey_completed",
+                channel: "in_app",
+                title: "Team Member Completed Journey",
+                message: `${employeeName} has completed the onboarding journey: "${journeyTitle}".`,
+                priority: "medium",
+                data: { journeyId, assignmentId, actorUserId },
+            });
+        }
+    }
+    /**
+     * Register Web Push Subscription (MOB-004)
+     */
+    async registerPushSubscription(orgId, userId, subscriptionData, userAgent) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId.toString());
+        const userObjectId = new mongoose.Types.ObjectId(userId.toString());
+        return PushSubscription.findOneAndUpdate({ endpoint: subscriptionData.endpoint }, {
+            organizationId: orgObjectId,
+            userId: userObjectId,
+            endpoint: subscriptionData.endpoint,
+            keys: subscriptionData.keys,
+            userAgent,
+        }, { upsert: true, new: true });
+    }
+    /**
+     * Unregister Web Push Subscription (MOB-004)
+     */
+    async unregisterPushSubscription(orgId, userId, endpoint) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId.toString());
+        const userObjectId = new mongoose.Types.ObjectId(userId.toString());
+        return PushSubscription.deleteOne({
+            endpoint,
+            organizationId: orgObjectId,
+            userId: userObjectId,
+        });
+    }
+}
+export default NotificationService;

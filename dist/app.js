@@ -1,0 +1,138 @@
+import Fastify from "fastify";
+import loggerConfig from "./config/logger.config.js";
+import { storageConfig } from "./config/index.js";
+import mongoose from "mongoose";
+import registerHelmet from "./plugins/helmet.js";
+import registerCors from "./plugins/cors.js";
+import registerCookie from "./plugins/cookie.js";
+import registerCompress from "./plugins/compress.js";
+import registerRateLimit from "./plugins/rate-limit.js";
+import registerMultipart from "./plugins/multipart.js";
+import registerJwt from "./plugins/jwt.js";
+import registerSwagger from "./plugins/swagger.js";
+import registerRequestId from "./middleware/request-id.middleware.js";
+import registerLogging from "./middleware/logging.middleware.js";
+import maintenanceModeGuard from "./middleware/maintenance.middleware.js";
+import errorHandler from "./middleware/error.middleware.js";
+import setupZodValidation from "./common/validators/compiler.js";
+import { authRoutes } from "./modules/auth/index.js";
+import { organizationRoutes } from "./modules/organizations/index.js";
+import { employeeRoutes } from "./modules/employees/index.js";
+import { journeyRoutes } from "./modules/journeys/index.js";
+import { assignmentRoutes } from "./modules/assignments/index.js";
+import { knowledgeBaseRoutes } from "./modules/knowledge-base/index.js";
+import { uploadRoutes } from "./modules/uploads/index.js";
+import { notificationRoutes } from "./modules/notifications/index.js";
+import { auditLogRoutes } from "./modules/audit-logs/index.js";
+import { superAdminRoutes } from "./modules/super-admin/routes/super-admin.routes.js";
+import { analyticsRoutes } from "./modules/analytics/index.js";
+import { localizationRoutes } from "./modules/localization/index.js";
+import { kioskRoutes } from "./modules/kiosk/index.js";
+import { taskRoutes } from "./modules/tasks/index.js";
+import { taskTemplateRoutes } from "./modules/tasks/routes/task-template.routes.js";
+import { workflowRoutes } from "./modules/workflows/index.js";
+import { managerRoutes } from "./modules/manager/routes/manager.routes.js";
+import { documentRoutes } from "./modules/documents/routes/document.routes.js";
+import { milestoneRoutes } from "./modules/milestones/routes/milestone.routes.js";
+import { ssoRoutes } from "./modules/auth/routes/sso.routes.js";
+import { hrisIntegrationRoutes } from "./modules/integrations/routes/hris-integration.routes.js";
+import { organizationIntegrationRoutes } from "./modules/integrations/routes/organization-integration.routes.js";
+import { officeLocationRoutes } from "./modules/locations/routes/office-location.routes.js";
+import { buddyRoutes } from "./modules/buddy/routes/buddy.routes.js";
+import { calendarRoutes } from "./modules/calendar/routes/calendar.routes.js";
+import { hrOperationsRoutes } from "./modules/hr/routes/hr-operations.routes.js";
+import { gamificationRoutes } from "./modules/gamification/routes/gamification.routes.js";
+import { aiAssistantRoutes } from "./modules/ai/routes/ai-assistant.routes.js";
+import { certificateRoutes } from "./modules/certificates/routes/certificate.routes.js";
+import { onboardingRoutes } from "./modules/onboarding/routes/onboarding.routes.js";
+import { registerAssignmentSubscribers } from "./modules/assignments/subscribers/assignment.subscriber.js";
+import { registerEventSubscribers } from "./infrastructure/events/event-subscribers.js";
+export async function buildApp() {
+    registerAssignmentSubscribers();
+    registerEventSubscribers();
+    const app = Fastify({
+        logger: loggerConfig,
+        disableRequestLogging: true, // Custom request/response lifecycle logging in logging.middleware.ts
+        bodyLimit: 50 * 1024 * 1024, // 50MB body limit for bulk operations
+    });
+    // Register foundational plugins
+    await registerHelmet(app);
+    await registerCors(app);
+    await registerCookie(app);
+    await registerCompress(app);
+    await registerRateLimit(app);
+    await registerMultipart(app);
+    await registerJwt(app);
+    await registerSwagger(app);
+    // Set custom Zod validation compiler
+    setupZodValidation(app);
+    // Register global middleware hooks
+    registerRequestId(app);
+    registerLogging(app);
+    app.addHook("preHandler", maintenanceModeGuard);
+    // Set global error handler
+    app.setErrorHandler(errorHandler);
+    // Register routes
+    await app.register(authRoutes, { prefix: "/api/v1/auth" });
+    await app.register(ssoRoutes, { prefix: "/api/v1/auth/sso" });
+    await app.register(hrisIntegrationRoutes, { prefix: "/api/v1/integrations" });
+    await app.register(organizationIntegrationRoutes, { prefix: "/api/v1/organizations/integrations" });
+    await app.register(officeLocationRoutes, { prefix: "/api/v1/locations" });
+    await app.register(organizationRoutes, { prefix: "/api/v1/organizations" });
+    await app.register(employeeRoutes, { prefix: "/api/v1/employees" });
+    await app.register(journeyRoutes, { prefix: "/api/v1/journeys" });
+    await app.register(journeyRoutes, { prefix: "/api/v1/courses" });
+    await app.register(assignmentRoutes, { prefix: "/api/v1/assignments" });
+    await app.register(knowledgeBaseRoutes, { prefix: "/api/v1/knowledge-base" });
+    await app.register(knowledgeBaseRoutes, { prefix: "/api/v1/kb" });
+    await app.register(uploadRoutes, { prefix: "/api/v1/uploads" });
+    await app.register(notificationRoutes, { prefix: "/api/v1/notifications" });
+    await app.register(auditLogRoutes, { prefix: "/api/v1/audit-logs" });
+    await app.register(superAdminRoutes, { prefix: "/api/v1/super-admin" });
+    await app.register(analyticsRoutes, { prefix: "/api/v1/analytics" });
+    await app.register(localizationRoutes, { prefix: "/api/v1/localization" });
+    await app.register(kioskRoutes, { prefix: "/api/v1/kiosk" });
+    await app.register(taskTemplateRoutes, { prefix: "/api/v1/tasks/templates" });
+    await app.register(taskRoutes, { prefix: "/api/v1/tasks" });
+    await app.register(workflowRoutes, { prefix: "/api/v1/workflows" });
+    await app.register(managerRoutes, { prefix: "/api/v1/manager" });
+    await app.register(documentRoutes, { prefix: "/api/v1/documents" });
+    await app.register(milestoneRoutes, { prefix: "/api/v1/milestones" });
+    await app.register(buddyRoutes, { prefix: "/api/v1/buddy" });
+    await app.register(calendarRoutes, { prefix: "/api/v1/calendar" });
+    await app.register(hrOperationsRoutes, { prefix: "/api/v1/hr" });
+    await app.register(gamificationRoutes, { prefix: "/api/v1/gamification" });
+    await app.register(aiAssistantRoutes, { prefix: "/api/v1/ai" });
+    await app.register(certificateRoutes, { prefix: "/api/v1/certificates" });
+    await app.register(onboardingRoutes, { prefix: "/api/v1/onboarding" });
+    // Health checks
+    app.get("/live", async () => {
+        return { status: "alive", timestamp: new Date().toISOString() };
+    });
+    app.get("/ready", async (request, reply) => {
+        const dbConnected = mongoose.connection.readyState === 1;
+        const storageConfigured = !!(storageConfig.endpoint &&
+            storageConfig.bucket &&
+            storageConfig.accessKeyId &&
+            storageConfig.secretAccessKey);
+        const status = dbConnected && storageConfigured ? "UP" : "DOWN";
+        const code = status === "UP" ? 200 : 503;
+        return reply.status(code).send({
+            status,
+            timestamp: new Date().toISOString(),
+            services: {
+                database: dbConnected ? "connected" : "disconnected",
+                storage: storageConfigured ? "configured" : "unconfigured",
+            },
+        });
+    });
+    app.get("/health", async (request, reply) => {
+        const dbConnected = mongoose.connection.readyState === 1;
+        if (!dbConnected) {
+            return reply.status(503).send({ status: "unhealthy", database: "disconnected" });
+        }
+        return { status: "healthy", database: "connected" };
+    });
+    return app;
+}
+export default buildApp;
