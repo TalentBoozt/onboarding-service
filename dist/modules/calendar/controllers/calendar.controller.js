@@ -1,0 +1,87 @@
+import { AppError } from "../../../common/errors/app-error.js";
+export class CalendarController {
+    calendarService;
+    constructor(calendarService) {
+        this.calendarService = calendarService;
+    }
+    connectProvider = async (request, reply) => {
+        const user = request.user;
+        const body = request.body;
+        const connection = await this.calendarService.connectProvider(user.organizationId, user.userId, body.provider, body.timezone);
+        return reply.status(200).send({
+            success: true,
+            message: "Calendar connection updated successfully",
+            data: connection,
+        });
+    };
+    getConnection = async (request, reply) => {
+        const user = request.user;
+        const connection = await this.calendarService.getConnection(user.organizationId, user.userId);
+        return reply.status(200).send({
+            success: true,
+            message: "Calendar connection status retrieved successfully",
+            data: connection,
+        });
+    };
+    getICalFeed = async (request, reply) => {
+        const params = request.params;
+        const token = params.token ? params.token.replace(".ics", "") : "";
+        const icsContent = await this.calendarService.generateICalFeed(token);
+        return reply
+            .header("Content-Type", "text/calendar; charset=utf-8")
+            .header("Content-Disposition", 'attachment; filename="onboarding-events.ics"')
+            .send(icsContent);
+    };
+    exportEventICal = async (request, reply) => {
+        const params = request.params;
+        const eventId = params.id ? params.id.replace(".ics", "") : "";
+        const icsContent = await this.calendarService.generateSingleEventICal(eventId);
+        return reply
+            .header("Content-Type", "text/calendar; charset=utf-8")
+            .header("Content-Disposition", `attachment; filename="event-${eventId}.ics"`)
+            .send(icsContent);
+    };
+    createMeetingEvent = async (request, reply) => {
+        const user = request.user;
+        const body = request.body;
+        if (user.role === "employee" && body.organizerUserId && body.organizerUserId !== user.userId) {
+            throw new AppError(403, "FORBIDDEN", "Employees cannot schedule meetings on behalf of other managers");
+        }
+        const event = await this.calendarService.createMeetingEvent(user.organizationId, user.userId, body);
+        return reply.status(201).send({
+            success: true,
+            message: "Meeting event scheduled successfully",
+            data: event,
+        });
+    };
+    listMeetingEvents = async (request, reply) => {
+        const user = request.user;
+        const events = await this.calendarService.listMeetingEvents(user.organizationId, user.userId);
+        return reply.status(200).send({
+            success: true,
+            message: "Meeting events retrieved successfully",
+            data: events,
+        });
+    };
+    updateMeetingEvent = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const body = request.body;
+        const event = await this.calendarService.updateMeetingEvent(user.organizationId, params.id, body);
+        return reply.status(200).send({
+            success: true,
+            message: "Meeting event updated successfully",
+            data: event,
+        });
+    };
+    cancelMeetingEvent = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const event = await this.calendarService.cancelMeetingEvent(user.organizationId, params.id);
+        return reply.status(200).send({
+            success: true,
+            message: "Meeting event cancelled successfully",
+            data: event,
+        });
+    };
+}

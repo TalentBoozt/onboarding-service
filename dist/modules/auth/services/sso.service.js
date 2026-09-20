@@ -1,0 +1,323 @@
+import mongoose from "mongoose";
+import SSOConfig from "../models/sso-config.model.js";
+import User from "../models/user.model.js";
+import SessionRepository from "../repositories/session.repository.js";
+import UserRepository from "../repositories/user.repository.js";
+import AppError from "../../../common/errors/app-error.js";
+import AuditLog from "../../audit-logs/models/audit-log.model.js";
+import Organization from "../../organizations/models/organization.model.js";
+import onboardingCaseService from "../../onboarding/services/onboarding-case.service.js";
+import workflowEngine from "../../workflows/services/workflow.engine.js";
+import documentService from "../../documents/services/document.service.js";
+import Journey from "../../journeys/models/journey.model.js";
+import EmployeeAssignment from "../../assignments/models/assignment.model.js";
+import AssignmentService from "../../assignments/services/assignment.service.js";
+import AssignmentRepository from "../../assignments/repositories/assignment.repository.js";
+export class SSOService {
+    userRepository;
+    sessionRepository;
+    jwt;
+    constructor(userRepository = new UserRepository(), sessionRepository = new SessionRepository(), jwt) {
+        this.userRepository = userRepository;
+        this.sessionRepository = sessionRepository;
+        this.jwt = jwt;
+    }
+    /**
+     * Get SSO Config for Organization (SSO-001)
+     */
+    async getSSOConfig(orgId) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId.toString());
+        let config = await SSOConfig.findOne({ organizationId: orgObjectId });
+        if (!config) {
+            config = await SSOConfig.create({
+                organizationId: orgObjectId,
+                provider: "okta",
+                domains: [],
+                enforceSSO: false,
+                defaultRole: "employee",
+                roleMappings: [],
+                status: "disabled",
+            });
+        }
+        return config;
+    }
+    /**
+     * Save / Update SSO Config (SSO-001)
+     */
+    async saveSSOConfig(orgId, userId, data) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId.toString());
+        const userObjectId = new mongoose.Types.ObjectId(userId.toString());
+        // Normalize domain / domains
+        let targetDomains = data.domains;
+        if (!targetDomains && data.domain) {
+            targetDomains = [data.domain];
+        }
+        // Normalize entryPoint / ssoUrl
+        const targetSsoUrl = data.ssoUrl !== undefined ? data.ssoUrl : data.entryPoint;
+        // Validate URL format for ssoUrl / entryPoint if provided
+        if (targetSsoUrl && targetSsoUrl.trim().length > 0) {
+            try {
+                const parsed = new URL(targetSsoUrl.trim());
+                if (!["http:", "https:"].includes(parsed.protocol)) {
+                    throw new Error();
+                }
+            }
+            catch {
+                throw new AppError(400, "BAD_REQUEST", "Invalid IdP Single Sign-On URL format. Must be a valid http or https URL.");
+            }
+        }
+        let config = await SSOConfig.findOne({ organizationId: orgObjectId });
+        if (!config) {
+            config = new SSOConfig({
+                organizationId: orgObjectId,
+                createdBy: userObjectId,
+            });
+        }
+        if (data.provider)
+            config.provider = data.provider;
+        if (Array.isArray(targetDomains)) {
+            config.domains = targetDomains.map((d) => d.toLowerCase().trim()).filter(Boolean);
+        }
+        if (data.issuerUrl !== undefined)
+            config.issuerUrl = data.issuerUrl;
+        if (data.issuerId !== undefined && data.issuerUrl === undefined)
+            config.issuerUrl = data.issuerId;
+        if (data.clientId !== undefined)
+            config.clientId = data.clientId;
+        if (data.issuerId !== undefined && data.clientId === undefined)
+            config.clientId = data.issuerId;
+        if (data.clientSecret !== undefined)
+            config.clientSecret = data.clientSecret;
+        if (targetSsoUrl !== undefined)
+            config.ssoUrl = targetSsoUrl ? targetSsoUrl.trim() : "";
+        if (data.certificate !== undefined)
+            config.certificate = data.certificate;
+        if (data.enforceSSO !== undefined)
+            config.enforceSSO = data.enforceSSO;
+        if (data.defaultRole)
+            config.defaultRole = data.defaultRole;
+        if (Array.isArray(data.roleMappings))
+            config.roleMappings = data.roleMappings;
+        if (data.status)
+            config.status = data.status;
+        if (data.enabled !== undefined && data.status === undefined) {
+            config.status = data.enabled ? "active" : "disabled";
+        }
+        await config.save();
+        // Synchronize to Organization.ssoConfig in MongoDB for fast queries and integrity
+        await Organization.findByIdAndUpdate(orgObjectId, {
+            $set: {
+                ssoConfig: {
+                    enabled: config.status === "active",
+                    provider: config.provider,
+                    domain: config.domains?.[0] || "",
+                    domains: config.domains,
+                    entryPoint: config.ssoUrl || "",
+                    ssoUrl: config.ssoUrl || "",
+                    issuerId: config.clientId || config.issuerUrl || "",
+                    issuerUrl: config.issuerUrl || "",
+                    certificate: config.certificate || "",
+                    enforceSSO: config.enforceSSO,
+                    status: config.status,
+                },
+            },
+        });
+        return config;
+    }
+    /**
+     * Domain Discovery (SSO-002)
+     */
+    async discoverDomainSSO(emailOrDomain) {
+        const domain = (emailOrDomain.includes("@")
+            ? emailOrDomain.split("@")[1]
+            : emailOrDomain)?.toLowerCase()?.trim();
+        if (!domain) {
+            return { ssoEnabled: false, enabled: false };
+        }
+        const config = await SSOConfig.findOne({
+            domains: domain,
+            status: "active",
+        });
+        if (!config) {
+            return { ssoEnabled: false, enabled: false };
+        }
+        const entryPoint = config.ssoUrl || (config.issuerUrl ? `${config.issuerUrl}/authorize` : "");
+        return {
+            ssoEnabled: true,
+            enabled: true,
+            provider: config.provider,
+            ssoUrl: entryPoint,
+            entryPoint,
+            enforceSSO: config.enforceSSO,
+            organizationId: config.organizationId.toString(),
+        };
+    }
+    /**
+     * Initiate SSO Redirect Auth (SSO-002)
+     */
+    async initiateSSOLogin(emailOrDomain) {
+        const discovery = await this.discoverDomainSSO(emailOrDomain);
+        if (!discovery.ssoEnabled) {
+            throw new AppError(404, "NOT_FOUND", "No SSO provider configured for this domain");
+        }
+        const state = Buffer.from(JSON.stringify({ identifier: emailOrDomain, orgId: discovery.organizationId, ts: Date.now() })).toString("base64");
+        const baseUrl = discovery.entryPoint || discovery.ssoUrl;
+        const authUrl = `${baseUrl}${baseUrl?.includes("?") ? "&" : "?"}client_id=talnova&response_type=code&scope=openid+profile+email&state=${state}`;
+        return {
+            authUrl,
+            redirectUrl: authUrl,
+            state,
+            provider: discovery.provider,
+            entryPoint: baseUrl,
+        };
+    }
+    /**
+     * Handle SSO Assertion Callback with JIT Provisioning & Group Role Mapping (SSO-003, SSO-004, SSO-005)
+     */
+    async handleSSOCallback(orgId, ssoPayload, ipAddress, deviceInfo) {
+        const orgObjectId = new mongoose.Types.ObjectId(orgId.toString());
+        const config = await SSOConfig.findOne({ organizationId: orgObjectId });
+        let role = config?.defaultRole || "employee";
+        // Group-to-Role Mapping (SSO-004)
+        if (config && config.roleMappings && ssoPayload.idpGroups && ssoPayload.idpGroups.length > 0) {
+            for (const mapping of config.roleMappings) {
+                if (ssoPayload.idpGroups.includes(mapping.idpGroup)) {
+                    role = mapping.role;
+                    break; // First matching group rule takes precedence
+                }
+            }
+        }
+        if (ssoPayload.role) {
+            role = ssoPayload.role;
+        }
+        // Account Discovery or JIT Provisioning (SSO-003, SSO-005)
+        let user = await User.findOne({
+            organizationId: orgObjectId,
+            "auth.email": ssoPayload.email.toLowerCase(),
+        });
+        if (!user) {
+            // Just-In-Time (JIT) Provisioning (SSO-003)
+            user = await User.create({
+                organizationId: orgObjectId,
+                auth: {
+                    email: ssoPayload.email.toLowerCase(),
+                    passwordHash: "SSO_AUTHENTICATED_NO_PASSWORD",
+                    authProvider: (ssoPayload.authProvider || config?.provider || "saml2"),
+                },
+                profile: {
+                    firstName: ssoPayload.firstName || "SSO",
+                    lastName: ssoPayload.lastName || "User",
+                },
+                employment: {
+                    department: ssoPayload.department || "General",
+                    jobTitle: "Team Member",
+                    status: "onboarding",
+                    onboardingState: "active",
+                },
+                permissions: {
+                    role,
+                },
+            });
+            // Step 3: Instantiate OnboardingCase and execute workflow rule auto-assignment
+            try {
+                const { case: caseRecord } = await onboardingCaseService.createCase({
+                    organizationId: orgObjectId.toString(),
+                    employeeId: user._id.toString(),
+                    source: "sso",
+                    idempotencyKey: `sso-jit-${user._id.toString()}`,
+                });
+                await onboardingCaseService.transition(caseRecord._id.toString(), orgObjectId.toString(), "resolving", user._id.toString(), "Resolving onboarding journey based on SSO department claim");
+                // Evaluate workflow rules & auto-provision journeys based on department claim
+                await workflowEngine.processEvent(orgObjectId, "user_created", user._id, { department: user.employment?.department });
+                // Fallback: If no journey was assigned by rules, check for department template
+                const existingAssignment = await EmployeeAssignment.findOne({
+                    organizationId: orgObjectId,
+                    employeeId: user._id,
+                    isDeleted: false,
+                });
+                if (!existingAssignment) {
+                    const deptRegex = new RegExp(`^${user.employment?.department}$`, "i");
+                    const matchingJourney = await Journey.findOne({
+                        organizationId: orgObjectId,
+                        $or: [
+                            { "audience.departmentNames": deptRegex },
+                            { department: deptRegex },
+                            { title: new RegExp(user.employment?.department || "", "i") },
+                            { "publishing.status": "published" },
+                        ],
+                        isDeleted: false,
+                    });
+                    if (matchingJourney) {
+                        const assignmentService = new AssignmentService(new AssignmentRepository());
+                        try {
+                            await assignmentService.assignJourney(orgObjectId, user._id, matchingJourney._id, user._id, { source: "smart_assignment" });
+                        }
+                        catch (err) {
+                            // Ignore duplicate assignment errors
+                        }
+                    }
+                }
+                await documentService.autoAssignDocumentsToNewHire(orgObjectId, user._id);
+                await onboardingCaseService.transition(caseRecord._id.toString(), orgObjectId.toString(), "provisioning", user._id.toString(), "SSO JIT provisioning journey and documents");
+                await onboardingCaseService.transition(caseRecord._id.toString(), orgObjectId.toString(), "ready", user._id.toString(), "SSO JIT provisioning complete");
+                await onboardingCaseService.transition(caseRecord._id.toString(), orgObjectId.toString(), "active", user._id.toString(), "SSO JIT employee onboarding active");
+            }
+            catch (err) {
+                console.warn("[SSOService] JIT onboarding case workflow execution error:", err.message);
+            }
+        }
+        else {
+            // Account Linking (SSO-005)
+            user.permissions.role = role; // Update role from IdP
+            if (ssoPayload.department)
+                user.employment.department = ssoPayload.department;
+            await user.save();
+        }
+        // Issue active session and token (SSO-005)
+        const session = await this.sessionRepository.create({
+            userId: user._id,
+            organizationId: user.organizationId,
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            ipAddress: ipAddress || "127.0.0.1",
+            deviceInfo: deviceInfo || "SSO Client",
+        });
+        const tokenPayload = {
+            userId: user._id.toString(),
+            organizationId: user.organizationId.toString(),
+            role: user.permissions.role,
+            sessionId: session._id.toString(),
+            tokenVersion: 1,
+        };
+        const token = this.jwt ? this.jwt.sign(tokenPayload) : "dummy_sso_token";
+        // Integration check: Record SAML/SSO authentication event in audit trail
+        await AuditLog.create({
+            organizationId: user.organizationId,
+            actorUserId: user._id,
+            actorType: "user",
+            eventCategory: "authentication",
+            eventType: "SSO_SAML_ASSERTION_PROCESSED",
+            resourceType: "User",
+            resourceId: user._id,
+            action: "login",
+            description: `SSO SAML authentication successful for ${ssoPayload.email} with provider ${config?.provider || 'saml2'}`,
+            metadata: {
+                email: ssoPayload.email,
+                ssoId: ssoPayload.ssoId,
+                provider: config?.provider || "saml2",
+                idpGroups: ssoPayload.idpGroups || [],
+                assignedRole: role,
+            },
+            request: {
+                ipAddress: ipAddress || "127.0.0.1",
+                userAgent: deviceInfo || "SSO Client",
+                endpoint: "/api/v1/auth/sso/callback",
+            },
+            severity: "info",
+        }).catch(() => undefined);
+        return {
+            user,
+            token,
+            session,
+        };
+    }
+}

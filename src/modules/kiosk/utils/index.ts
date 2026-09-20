@@ -1,2 +1,0 @@
-// Shared kiosk utilities
-export {};

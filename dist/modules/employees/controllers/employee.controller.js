@@ -1,0 +1,168 @@
+import FeatureFlagService from "../../super-admin/services/feature-flag.service.js";
+export class EmployeeController {
+    employeeService;
+    constructor(employeeService) {
+        this.employeeService = employeeService;
+    }
+    getMe = async (request, reply) => {
+        const user = request.user;
+        const profile = await this.employeeService.getProfile(user.userId);
+        const features = await FeatureFlagService.getAllResolvedFlags(user.organizationId, user.role);
+        const profileData = typeof profile?.toObject === "function" ? profile.toObject() : profile;
+        return reply.status(200).send({
+            success: true,
+            message: "Profile retrieved successfully",
+            data: {
+                ...profileData,
+                features,
+            },
+        });
+    };
+    updateMe = async (request, reply) => {
+        const user = request.user;
+        const profile = await this.employeeService.updateProfile(user.userId, request.body);
+        return reply.status(200).send({
+            success: true,
+            message: "Profile updated successfully",
+            data: profile,
+        });
+    };
+    updatePreferences = async (request, reply) => {
+        const user = request.user;
+        const profile = await this.employeeService.updatePreferences(user.userId, request.body);
+        return reply.status(200).send({
+            success: true,
+            message: "Preferences updated successfully",
+            data: profile,
+        });
+    };
+    changePassword = async (request, reply) => {
+        const user = request.user;
+        const body = request.body;
+        await this.employeeService.changePassword(user.userId, body.oldPassword, body.newPassword);
+        return reply.status(200).send({
+            success: true,
+            message: "Password updated successfully",
+            data: null,
+        });
+    };
+    listEmployees = async (request, reply) => {
+        const user = request.user;
+        const query = request.query;
+        const { departmentId, teamId, managerId, status, search, page, limit, sortBy, sortOrder } = query;
+        const filter = {
+            organizationId: user.organizationId,
+            departmentId,
+            teamId,
+            managerId,
+            status,
+            search,
+        };
+        const parsedLimit = limit !== undefined ? parseInt(limit, 10) : 1000;
+        const limitVal = isNaN(parsedLimit) || parsedLimit <= 0 ? 10000 : parsedLimit;
+        const pagination = {
+            page: page ? parseInt(page, 10) : 1,
+            limit: limitVal,
+            sortBy,
+            sortOrder,
+        };
+        const result = await this.employeeService.listEmployees(filter, pagination);
+        return reply.status(200).send({
+            success: true,
+            message: "Employees list retrieved successfully",
+            data: result.employees,
+            meta: {
+                total: result.total,
+                page: pagination.page,
+                limit: pagination.limit,
+                totalPages: Math.ceil(result.total / pagination.limit) || 1,
+            },
+        });
+    };
+    getEmployee = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const employee = await this.employeeService.getEmployee(params.id, user.organizationId);
+        return reply.status(200).send({
+            success: true,
+            message: "Employee details retrieved successfully",
+            data: employee,
+        });
+    };
+    inviteEmployee = async (request, reply) => {
+        const user = request.user;
+        const body = request.body;
+        const employee = await this.employeeService.inviteEmployee(user.organizationId, body, user.userId);
+        return reply.status(201).send({
+            success: true,
+            message: "Employee invited successfully",
+            data: employee,
+        });
+    };
+    updateEmployee = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const employee = await this.employeeService.updateEmployee(params.id, user.organizationId, request.body);
+        return reply.status(200).send({
+            success: true,
+            message: "Employee updated successfully",
+            data: employee,
+        });
+    };
+    deleteEmployee = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        await this.employeeService.deleteEmployee(params.id, user.organizationId, user.userId);
+        return reply.status(200).send({
+            success: true,
+            message: "Employee deleted successfully",
+            data: null,
+        });
+    };
+    validateBulkImport = async (request, reply) => {
+        const user = request.user;
+        const body = request.body;
+        const users = body?.users || body?.employees || (Array.isArray(body) ? body : []);
+        const options = body?.options || {};
+        const result = await this.employeeService.validateBulkImport(user.organizationId, users, options);
+        return reply.status(200).send({
+            success: true,
+            message: "Validation completed",
+            data: result,
+        });
+    };
+    importEmployees = async (request, reply) => {
+        const user = request.user;
+        const body = request.body;
+        const users = body?.users || body?.employees || (Array.isArray(body) ? body : []);
+        const options = body?.options || {};
+        const result = await this.employeeService.bulkImportEmployees(user.organizationId, users, user.userId, options);
+        return reply.status(200).send({
+            success: true,
+            message: "Employees imported successfully",
+            imported: result.successCount,
+            updated: result.updatedCount,
+            skipped: result.failures.length,
+            errors: result.failures,
+            data: {
+                ...result,
+                imported: result.successCount,
+                updated: result.updatedCount,
+                skipped: result.failures.length,
+                errors: result.failures,
+            },
+        });
+    };
+    setLegalHold = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const body = (request.body || {});
+        const employee = await this.employeeService.setLegalHold(user.organizationId, params.id, body.legalHold !== undefined ? !!body.legalHold : true, body.reason, user.userId);
+        return reply.status(200).send({
+            success: true,
+            message: `Legal hold ${employee.compliance?.legalHold ? "placed" : "released"} successfully`,
+            data: employee,
+        });
+    };
+}
+export default EmployeeController;
