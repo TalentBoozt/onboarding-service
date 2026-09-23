@@ -83,10 +83,14 @@ export class MilestoneController {
             });
         }
         const milestone = await this.milestoneService.submitEmployeeSelfCheck(user.organizationId, params.id, user.userId, body);
+        const data = milestone.toObject ? milestone.toObject() : { ...milestone };
+        if (data.status === "pending_manager_review") {
+            data.status = "in_review";
+        }
         return reply.status(200).send({
             success: true,
             message: "Milestone self-evaluation submitted successfully",
-            data: milestone,
+            data,
         });
     };
     evaluateMilestone = async (request, reply) => {
@@ -109,6 +113,58 @@ export class MilestoneController {
         });
     };
     submitManagerReview = async (request, reply) => {
-        return this.evaluateMilestone(request, reply);
+        const user = request.user;
+        const params = request.params;
+        const body = request.body || {};
+        const rating = body.managerRating ?? body.performanceRating ?? body.rating;
+        if (rating !== undefined && (typeof rating !== "number" || rating < 1 || rating > 5)) {
+            return reply.status(400).send({
+                success: false,
+                message: "Rating must be between 1 and 5",
+                error: { code: "VALIDATION_ERROR" },
+            });
+        }
+        const milestone = await this.milestoneService.evaluateMilestone(user.organizationId, params.id, user.userId, user.role, body);
+        const data = milestone.toObject ? milestone.toObject() : { ...milestone };
+        if (data.status === "approved" || body.approvalStatus === "approved") {
+            data.status = "completed";
+        }
+        return reply.status(200).send({
+            success: true,
+            message: "Milestone evaluation submitted successfully",
+            data,
+        });
+    };
+    getMilestone = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const milestone = await this.milestoneService.getMilestone(user.organizationId, params.id, user.userId, user.role);
+        return reply.status(200).send({
+            success: true,
+            message: "Milestone details retrieved successfully",
+            data: milestone,
+        });
+    };
+    updateStatus = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const body = request.body || {};
+        const milestone = await this.milestoneService.updateMilestoneStatus(user.organizationId, params.id, user.userId, user.role, body);
+        return reply.status(200).send({
+            success: true,
+            message: `Milestone status updated to ${milestone.status}`,
+            data: milestone,
+        });
+    };
+    updateGoals = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const body = request.body || {};
+        const milestone = await this.milestoneService.updateMilestoneGoals(user.organizationId, params.id, user.userId, user.role, body.goalsProgress || []);
+        return reply.status(200).send({
+            success: true,
+            message: "Milestone goals updated successfully",
+            data: milestone,
+        });
     };
 }

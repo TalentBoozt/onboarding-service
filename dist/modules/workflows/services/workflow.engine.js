@@ -15,6 +15,8 @@ import buddyService from "../../buddy/services/buddy.service.js";
 import smartAssignmentService from "../../journeys/services/smart-assignment.service.js";
 import onboardingCaseService from "../../onboarding/services/onboarding-case.service.js";
 import queueService from "../../../infrastructure/queue/queue.service.js";
+import milestoneService from "../../milestones/services/milestone.service.js";
+import roleChecklistService from "../../tasks/services/role-checklist.service.js";
 const assignmentService = new EmployeeAssignmentService(new AssignmentRepository());
 const taskService = new TaskService(new TaskRepository());
 const notificationService = new NotificationService(new NotificationRepository());
@@ -495,19 +497,42 @@ export class WorkflowEngine {
                     return { status: "failed", message: "taskTitle parameter missing for create_task action" };
                 }
                 try {
+                    const orgObjectId = new mongoose.Types.ObjectId(organizationId.toString());
+                    const authorObjectId = mongoose.Types.ObjectId.isValid(authorIdStr)
+                        ? new mongoose.Types.ObjectId(authorIdStr)
+                        : targetUser._id;
+                    const assignedUserId = await roleChecklistService.resolveResponsibleUser(orgObjectId, targetUser, action.params.taskAssigneeRole, authorObjectId);
+                    const offsetDays = action.params.relativeOffsetDays ?? 7;
+                    const calculatedDueDate = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
                     const createdTask = await taskService.createTask(organizationId, authorIdStr, {
                         employeeId: targetUser._id.toString(),
-                        assignedToUserId: targetUser._id.toString(),
+                        assignedToUserId: assignedUserId.toString(),
                         title: action.params.taskTitle,
                         description: action.params.taskDescription || "Automated task triggered by workflow",
                         category: action.params.taskCategory || "general",
                         stage: action.params.taskStage || "day_1",
                         priority: action.params.taskPriority || "normal",
-                        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                        dueDate: calculatedDueDate,
                     });
+                    if (assignedUserId.toString() !== targetUser._id.toString()) {
+                        const employeeName = `${targetUser.profile?.firstName || ""} ${targetUser.profile?.lastName || ""}`.trim() || "Employee";
+                        notificationService.createNotification({
+                            organizationId,
+                            recipientUserId: assignedUserId,
+                            type: "manager_alert",
+                            title: `New Workflow Task for ${employeeName}`,
+                            message: `Task "${action.params.taskTitle}" assigned to you for ${employeeName}. Due by ${calculatedDueDate.toLocaleDateString()}.`,
+                            priority: action.params.taskPriority === "critical" || action.params.taskPriority === "high" ? "high" : "medium",
+                            data: {
+                                taskId: createdTask._id.toString(),
+                                employeeId: targetUser._id.toString(),
+                                deepLink: "/tasks",
+                            },
+                        }).catch((err) => console.warn("[WorkflowEngine] Assignee notification dispatch error:", err));
+                    }
                     return {
                         status: "success",
-                        message: `Created task "${action.params.taskTitle}" for ${targetUser.profile?.firstName}`,
+                        message: `Created task "${action.params.taskTitle}" (assigned to ${action.params.taskAssigneeRole || "employee"}) for ${targetUser.profile?.firstName}`,
                         output: createdTask,
                     };
                 }
@@ -515,6 +540,31 @@ export class WorkflowEngine {
                     return {
                         status: "failed",
                         message: `Task creation failed: ${err.message}`,
+                    };
+                }
+            }
+            case "assign_checklist": {
+                const checklistTemplateId = action.params?.checklistTemplateId ||
+                    action.params?.templateId ||
+                    action.targetTemplateId;
+                if (!checklistTemplateId) {
+                    return {
+                        status: "failed",
+                        message: "checklistTemplateId parameter missing for assign_checklist action",
+                    };
+                }
+                try {
+                    const applied = await roleChecklistService.applyTemplateToUser(organizationId, checklistTemplateId, targetUser._id, authorIdStr);
+                    return {
+                        status: "success",
+                        message: `Applied checklist template "${checklistTemplateId}" (${applied.tasksCount || 0} tasks created) for ${targetUser.profile?.firstName || "employee"}`,
+                        output: applied,
+                    };
+                }
+                catch (err) {
+                    return {
+                        status: "failed",
+                        message: `Checklist template assignment failed: ${err.message}`,
                     };
                 }
             }
@@ -526,19 +576,35 @@ export class WorkflowEngine {
                     };
                 }
                 try {
-                    const notif = await notificationService.createNotification({
-                        organizationId,
-                        recipientUserId: targetUser._id,
-                        type: "announcement",
-                        channel: action.params.notificationChannel || "in_app",
-                        title: action.params.notificationTitle,
-                        message: action.params.notificationMessage,
-                        priority: "medium",
-                    });
+                    const recipientRole = action.params.recipientRole || "employee";
+                    const recipientIds = [];
+                    if (recipientRole === "employee" || recipientRole === "both" || !recipientRole) {
+                        recipientIds.push(targetUser._id.toString());
+                    }
+                    if (recipientRole === "manager" || recipientRole === "both") {
+                        const mgrId = targetUser.employment?.managerId || targetUser.employment?.managerUserId;
+                        if (mgrId)
+                            recipientIds.push(mgrId.toString());
+                    }
+                    const uniqueIds = Array.from(new Set(recipientIds));
+                    const notifs = [];
+                    for (const rId of uniqueIds) {
+                        const notif = await notificationService.createNotification({
+                            organizationId,
+                            recipientUserId: rId,
+                            type: "announcement",
+                            channel: action.params.notificationChannel || "in_app",
+                            title: action.params.notificationTitle,
+                            message: action.params.notificationMessage,
+                            priority: "medium",
+                        });
+                        if (notif)
+                            notifs.push(notif);
+                    }
                     return {
                         status: "success",
-                        message: `Sent notification to ${targetUser.profile?.firstName}`,
-                        output: notif,
+                        message: `Sent notification to ${uniqueIds.length} recipients`,
+                        output: notifs,
                     };
                 }
                 catch (err) {
@@ -634,6 +700,48 @@ export class WorkflowEngine {
                     return {
                         status: "failed",
                         message: `Webhook dispatch failed: ${err.message}`,
+                    };
+                }
+            }
+            case "assign_milestone": {
+                const templateId = action.params?.templateId;
+                const targetDay = action.params?.targetDay;
+                try {
+                    let resolvedTemplateId = templateId;
+                    if (!resolvedTemplateId) {
+                        const MilestoneTemplate = mongoose.model("MilestoneTemplate");
+                        const query = { organizationId: new mongoose.Types.ObjectId(organizationId), isDeleted: false };
+                        if (targetDay) {
+                            query.targetDay = targetDay;
+                        }
+                        const foundTmpl = await MilestoneTemplate.findOne(query);
+                        if (foundTmpl) {
+                            resolvedTemplateId = foundTmpl._id.toString();
+                        }
+                    }
+                    if (!resolvedTemplateId) {
+                        return {
+                            status: "failed",
+                            message: "No milestone template found for assign_milestone action",
+                        };
+                    }
+                    const assignedMilestone = await milestoneService.assignMilestone(organizationId, resolvedTemplateId, targetUser._id, authorIdStr);
+                    return {
+                        status: "success",
+                        message: `Assigned milestone template (${resolvedTemplateId}) to ${targetUser.profile?.firstName || "employee"}`,
+                        output: assignedMilestone,
+                    };
+                }
+                catch (err) {
+                    if (err.statusCode === 409 || err.message?.includes("already assigned")) {
+                        return {
+                            status: "skipped",
+                            message: `Milestone is already assigned to ${targetUser.profile?.firstName || "employee"}`,
+                        };
+                    }
+                    return {
+                        status: "failed",
+                        message: `Milestone assignment failed: ${err.message}`,
                     };
                 }
             }

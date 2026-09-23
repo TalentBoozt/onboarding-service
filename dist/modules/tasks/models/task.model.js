@@ -90,7 +90,7 @@ const TaskSchema = new Schema({
     hardwareMetadata: {
         deviceType: {
             type: String,
-            enum: ["laptop", "monitor", "mobile", "security_key", "peripherals"],
+            trim: true,
         },
         serialNumber: { type: String, trim: true },
         assetTag: { type: String, trim: true },
@@ -105,10 +105,11 @@ const TaskSchema = new Schema({
         },
         mdmStatus: {
             type: String,
-            enum: ["pending_dispatch", "dispatched", "enrolled", "failed"],
             default: "pending_dispatch",
         },
         mdmExternalId: { type: String },
+        receivedConfirmedAt: { type: Date },
+        receivedConfirmedBy: { type: Schema.Types.ObjectId, ref: "User" },
     },
     isDeleted: { type: Boolean, default: false },
     deletedAt: { type: Date },

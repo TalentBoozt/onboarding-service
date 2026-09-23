@@ -28,6 +28,8 @@ export async function taskRoutes(app) {
     app.patch("/:id/hardware", { schema: { body: updateHardwareMetadataSchema } }, controller.updateHardwareMetadata);
     // POST /api/v1/tasks/:id/hardware/receipt (Prompt 08 Step 1.2)
     app.post("/:id/hardware/receipt", { schema: { body: attachHardwareReceiptSchema } }, controller.attachHardwareReceipt);
+    // POST /api/v1/tasks/:id/hardware/confirm-receipt
+    app.post("/:id/hardware/confirm-receipt", controller.confirmHardwareReceipt);
     // POST /api/v1/tasks/mdm/dispatch/:taskId (Prompt 08 Step 2.2)
     app.post("/mdm/dispatch/:taskId", controller.dispatchMdmWebhook);
     // POST /api/v1/tasks/mdm/callback (Prompt 08 Step 2.2 - Inbound MDM callback)

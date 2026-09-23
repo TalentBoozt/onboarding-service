@@ -86,7 +86,10 @@ const OrganizationSchema = new Schema({
         completionRate: { type: Number, default: 0 },
     },
     certificate: {
-        template: { type: String, enum: ["classic", "modern", "minimalist"], default: "classic" },
+        template: { type: String, enum: ["classic", "modern", "minimalist", "academic", "gradient", "executive"], default: "classic" },
+        theme: { type: String, enum: ["light", "dark"], default: "light" },
+        accentColor: { type: String },
+        badgeStyle: { type: String, enum: ["medal", "laurel", "shield", "crypto", "ribbon"], default: "medal" },
         signatureUrl: { type: String },
         signatoryName: { type: String },
         signatoryTitle: { type: String },

@@ -59,11 +59,17 @@ export class AuthService {
         await this.userRepository.update(user._id, {
             "auth.lastLoginAt": new Date(),
         });
+        const userRoles = Array.from(new Set([
+            user.permissions.role,
+            ...(Array.isArray(user.permissions.roles) ? user.permissions.roles : []),
+            ...(Array.isArray(user.permissions.customRoles) ? user.permissions.customRoles : []),
+        ].filter(Boolean)));
         // Generate Tokens
         const payload = {
             userId: user._id.toString(),
             organizationId: user.organizationId.toString(),
             role: user.permissions.role,
+            roles: userRoles,
             sessionId: session._id.toString(),
             tokenVersion: 1,
         };
@@ -78,6 +84,7 @@ export class AuthService {
                 firstName: user.profile.firstName,
                 lastName: user.profile.lastName,
                 role: user.permissions.role,
+                roles: userRoles,
                 organizationId: user.organizationId,
             },
         };
@@ -118,10 +125,16 @@ export class AuthService {
             throw new AppError(403, "FORBIDDEN", "Your organization has been suspended. Access denied.");
         }
         // Generate new payload with incremented tokenVersion
+        const userRoles = Array.from(new Set([
+            user.permissions.role,
+            ...(Array.isArray(user.permissions.roles) ? user.permissions.roles : []),
+            ...(Array.isArray(user.permissions.customRoles) ? user.permissions.customRoles : []),
+        ].filter(Boolean)));
         const newPayload = {
             userId: user._id.toString(),
             organizationId: user.organizationId.toString(),
             role: user.permissions.role,
+            roles: userRoles,
             sessionId: updatedSession._id.toString(),
             tokenVersion: updatedSession.tokenVersion,
         };

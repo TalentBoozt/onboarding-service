@@ -14,6 +14,7 @@ import { Organization } from "../../organizations/models/organization.model.js";
 import { Journey } from "../../journeys/models/journey.model.js";
 import { EmailService } from "../../../shared/email/email.service.js";
 import FeatureFlagService from "../../super-admin/services/feature-flag.service.js";
+import { appConfig } from "../../../config/index.js";
 const registerSchema = z.object({
     orgName: z.string().min(1, "Organization name is required"),
     orgSlug: z.string().min(1, "Workspace slug is required"),
@@ -108,6 +109,7 @@ export async function authRoutes(app) {
             },
             permissions: {
                 role: "owner",
+                roles: ["owner"],
                 customRoles: []
             },
             preferences: {
@@ -249,6 +251,13 @@ export async function authRoutes(app) {
             throw new AppError(404, "USER_NOT_FOUND", "Authenticated user profile not found");
         }
         const features = await FeatureFlagService.getAllResolvedFlags(authUser.organizationId, authUser.role);
+        const userRoles = Array.from(new Set([
+            user.permissions?.role || "employee",
+            ...(Array.isArray(user.permissions?.roles) ? user.permissions.roles : []),
+            ...(Array.isArray(user.permissions?.customRoles) ? user.permissions.customRoles : []),
+        ].filter(Boolean)));
+        const resolvedRole = user.permissions?.role || "employee";
+        const resolvedRoles = userRoles.length > 0 ? userRoles : [resolvedRole];
         return reply.status(200).send({
             success: true,
             data: {
@@ -257,9 +266,12 @@ export async function authRoutes(app) {
                     email: user.auth.email,
                     profile: user.profile,
                     employment: user.employment,
-                    role: user.permissions?.role,
+                    role: resolvedRole,
+                    roles: resolvedRoles,
                     organizationId: user.organizationId,
                 },
+                role: resolvedRole,
+                roles: resolvedRoles,
                 organization: org
                     ? {
                         id: org._id,
@@ -296,6 +308,39 @@ export async function authRoutes(app) {
             body: resetPasswordSchema,
         },
     }, controller.resetPassword);
+    // GET /api/v1/auth/invitations/verify
+    app.get("/invitations/verify", {
+        schema: {
+            querystring: z.object({
+                token: z.string().min(1, "Token is required"),
+            }),
+        },
+    }, async (request, reply) => {
+        const { token } = request.query;
+        const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+        const user = await User.findOne({
+            "security.passwordResetToken": hashedToken,
+            "security.passwordResetExpires": { $gt: new Date() },
+            isDeleted: false,
+        });
+        if (!user) {
+            throw new AppError(400, "INVALID_TOKEN", "Invitation token is invalid or has expired.");
+        }
+        const org = await Organization.findById(user.organizationId).lean();
+        return reply.status(200).send({
+            success: true,
+            data: {
+                email: user.auth.email,
+                firstName: user.profile?.firstName,
+                lastName: user.profile?.lastName,
+                fullName: user.profile?.fullName,
+                role: user.permissions?.role,
+                organizationName: org?.name || "Talnova",
+                organizationSlug: org?.slug,
+                organizationLogo: org?.branding?.logoUrl || org?.logoUrl,
+            },
+        });
+    });
     // POST /api/v1/auth/invitations/accept
     app.post("/invitations/accept", {
         schema: {
@@ -323,10 +368,55 @@ export async function authRoutes(app) {
         user.security.passwordResetExpires = undefined;
         user.auth.passwordChangedAt = new Date();
         await user.save();
+        // Create authenticated session and tokens for immediate sign-in
+        const sessionExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        const session = await sessionRepository.create({
+            userId: user._id,
+            organizationId: user.organizationId,
+            tokenVersion: 1,
+            deviceInfo: request.headers["user-agent"],
+            ipAddress: request.ip,
+            expiresAt: sessionExpiresAt,
+            isValid: true,
+            lastActivityAt: new Date(),
+        });
+        const userRoles = Array.from(new Set([
+            user.permissions.role,
+            ...(Array.isArray(user.permissions.roles) ? user.permissions.roles : []),
+            ...(Array.isArray(user.permissions.customRoles) ? user.permissions.customRoles : []),
+        ].filter(Boolean)));
+        const payload = {
+            userId: user._id.toString(),
+            organizationId: user.organizationId.toString(),
+            role: user.permissions.role,
+            roles: userRoles,
+            sessionId: session._id.toString(),
+            tokenVersion: 1,
+        };
+        const accessToken = app.jwt.sign(payload, { expiresIn: "15m" });
+        const refreshToken = app.jwt.sign(payload, { expiresIn: "30d" });
+        reply.setCookie("refreshToken", refreshToken, {
+            path: "/api/v1/auth",
+            httpOnly: true,
+            secure: appConfig.isProduction,
+            sameSite: "strict",
+            maxAge: 30 * 24 * 60 * 60 * 1000,
+        });
         return reply.status(200).send({
             success: true,
             message: "Invitation accepted successfully. Account activated.",
-            data: null,
+            data: {
+                accessToken,
+                user: {
+                    id: user._id,
+                    email: user.auth.email,
+                    firstName: user.profile?.firstName,
+                    lastName: user.profile?.lastName,
+                    role: user.permissions?.role,
+                    roles: userRoles,
+                    organizationId: user.organizationId,
+                },
+            },
         });
     });
     if (process.env.NODE_ENV !== "production") {

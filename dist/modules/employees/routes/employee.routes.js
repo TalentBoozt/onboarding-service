@@ -16,22 +16,22 @@ export async function employeeRoutes(app) {
     app.patch("/me/preferences", { schema: { body: updatePreferencesSchema } }, controller.updatePreferences);
     app.patch("/me/password", { schema: { body: changePasswordSchema } }, controller.changePassword);
     // Directory & Administration Routes
-    app.get("/", { preHandler: [requireRole(["owner", "admin", "manager"])] }, controller.listEmployees);
+    app.get("/", { preHandler: [requireRole(["owner", "admin", "hr_admin", "manager", "it_admin"])] }, controller.listEmployees);
     app.post("/invite", {
-        preHandler: [requireRole(["owner", "admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
         schema: { body: inviteEmployeeSchema },
     }, controller.inviteEmployee);
     app.post("/bulk/validate", {
-        preHandler: [requireRole(["owner", "admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
         schema: { body: validateBulkImportSchema },
     }, controller.validateBulkImport);
     app.post("/import", {
-        preHandler: [requireRole(["owner", "admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
         schema: { body: importEmployeesSchema },
     }, controller.importEmployees);
-    app.get("/:id", { preHandler: [requireRole(["owner", "admin", "manager"])] }, controller.getEmployee);
+    app.get("/:id", { preHandler: [requireRole(["owner", "admin", "hr_admin", "manager"])] }, controller.getEmployee);
     app.patch("/:id", {
-        preHandler: [requireRole(["owner", "admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
         schema: { body: updateEmployeeSchema },
     }, controller.updateEmployee);
     app.delete("/:id", { preHandler: [requireRole(["owner", "admin"])] }, controller.deleteEmployee);

@@ -44,5 +44,10 @@ export async function milestoneRoutes(app) {
         preHandler: [requireRole(["owner", "admin", "manager"])],
         schema: { body: managerReviewSchema },
     }, controller.submitManagerReview);
+    // Single Milestone Details & Direct Status / Goals Operations
+    app.get("/:id", controller.getMilestone);
+    app.patch("/:id/status", controller.updateStatus);
+    app.put("/:id/status", controller.updateStatus);
+    app.patch("/:id/goals", controller.updateGoals);
 }
 export default milestoneRoutes;

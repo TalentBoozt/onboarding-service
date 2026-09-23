@@ -77,11 +77,17 @@ export function requireRole(allowedRoles) {
         if (!request.user) {
             throw new AppError(401, "UNAUTHORIZED", "Please authenticate first");
         }
-        const { role } = request.user;
-        if (role === "super_admin") {
+        const { role, roles, customRoles } = request.user;
+        if (role === "super_admin" || (Array.isArray(roles) && roles.includes("super_admin"))) {
             return;
         }
-        if (!allowedRoles.includes(role)) {
+        const userRoles = Array.from(new Set([
+            role,
+            ...(Array.isArray(roles) ? roles : []),
+            ...(Array.isArray(customRoles) ? customRoles : []),
+        ].filter(Boolean)));
+        const hasPermission = allowedRoles.some((r) => userRoles.includes(r));
+        if (!hasPermission) {
             throw new AppError(403, "FORBIDDEN", "Access denied. You do not have the required role to perform this action.");
         }
     };

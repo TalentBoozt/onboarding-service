@@ -66,7 +66,7 @@ const EmployeeMilestoneSchema = new Schema({
         },
         blockersReported: { type: Boolean, default: false },
     },
-    aiSummary: { type: String },
+    aiSummary: { type: Schema.Types.Mixed },
     approvedBy: { type: Schema.Types.Mixed },
     isDeleted: { type: Boolean, default: false },
 }, {

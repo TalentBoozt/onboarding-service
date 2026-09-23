@@ -18,6 +18,11 @@ const RoleChecklistItemSchema = new Schema({
         default: "normal",
     },
     relativeOffsetDays: { type: Number, default: 0 },
+    responsibleRole: {
+        type: String,
+        enum: ["employee", "manager", "it_admin", "hr_admin", "buddy"],
+        default: "employee",
+    },
     requiresVerification: { type: Boolean, default: false },
     autoVerification: {
         enabled: { type: Boolean, default: false },
