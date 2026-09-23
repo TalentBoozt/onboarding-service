@@ -84,4 +84,41 @@ export class CalendarController {
             data: event,
         });
     };
+    getAvailability = async (request, reply) => {
+        const user = request.user;
+        const query = request.query;
+        const availability = await this.calendarService.getAvailability(user.organizationId, query);
+        return reply.status(200).send({
+            success: true,
+            message: "Availability and slots retrieved successfully",
+            data: availability,
+        });
+    };
+    exportOnboardingPack = async (request, reply) => {
+        const user = request.user;
+        const query = request.query || {};
+        const targetUserId = query.userId || user.userId;
+        const icsContent = await this.calendarService.generateOnboardingSchedulePack(user.organizationId, targetUserId);
+        return reply
+            .header("Content-Type", "text/calendar; charset=utf-8")
+            .header("Content-Disposition", 'attachment; filename="talnova-onboarding-pack.ics"')
+            .send(icsContent);
+    };
+    scheduleMilestoneReview = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const body = request.body || {};
+        const event = await this.calendarService.scheduleMilestoneReviewMeeting(user.organizationId, user.userId, {
+            milestoneId: params.milestoneId,
+            targetDate: body.targetDate,
+            startTime: body.startTime,
+            durationMinutes: body.durationMinutes,
+            locationUrl: body.locationUrl,
+        });
+        return reply.status(201).send({
+            success: true,
+            message: "Milestone review 1-on-1 scheduled successfully",
+            data: event,
+        });
+    };
 }

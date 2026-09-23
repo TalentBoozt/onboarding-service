@@ -14,7 +14,7 @@ const AIUsageRecordSchema = new Schema({
     },
     feature: {
         type: String,
-        enum: ["ai_course_builder", "ai_assistant", "kb_rag", "document_summary"],
+        enum: ["ai_course_builder", "ai_assistant", "kb_rag", "document_summary", "milestone_reflection"],
         required: true,
         index: true
     },

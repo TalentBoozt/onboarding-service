@@ -112,6 +112,9 @@ export class EmployeeAssignmentService {
         }
         // Publish event & dispatch notification
         try {
+            const employeeUser = await mongoose.model("User").findById(employeeId).select("employment.managerId profile.firstName profile.lastName");
+            const employeeName = employeeUser ? `${employeeUser.profile?.firstName || ""} ${employeeUser.profile?.lastName || ""}`.trim() : "Employee";
+            const managerUserId = employeeUser?.employment?.managerId;
             await eventBus.publish({
                 eventName: "JOURNEY_ASSIGNED",
                 organizationId: orgId,
@@ -122,6 +125,9 @@ export class EmployeeAssignmentService {
                     assignmentId: doc._id.toString(),
                     journeyTitle: journey.title,
                     assignedBy: assignedBy.toString(),
+                    employeeId: employeeId.toString(),
+                    employeeName,
+                    managerUserId: managerUserId ? managerUserId.toString() : undefined,
                 },
             });
         }
@@ -262,7 +268,7 @@ export class EmployeeAssignmentService {
                 // Emit ON_STEP_COMPLETED event
                 try {
                     eventBus.publish({
-                        eventName: "JOURNEY_COMPLETED",
+                        eventName: "STEP_COMPLETED",
                         organizationId: orgId,
                         actorId: assignment.employeeId,
                         entityId: assignment._id,

@@ -16,5 +16,7 @@ export async function hrisIntegrationRoutes(app) {
     app.delete("/:id", { preHandler: [authenticate, requireRole(["owner", "admin"])] }, controller.deleteIntegration);
     app.post("/:id/test", { preHandler: [authenticate, requireRole(["owner", "admin"])] }, controller.testConnection);
     app.get("/:id/logs", { preHandler: [authenticate, requireRole(["owner", "admin"])] }, controller.getSyncLogs);
+    app.post("/:id/rotate-secret", { preHandler: [authenticate, requireRole(["owner", "admin"])] }, controller.rotateWebhookSecret);
+    app.post("/:id/dlq/:eventId/retry", { preHandler: [authenticate, requireRole(["owner", "admin"])] }, controller.retryDLQEvent);
 }
 export default hrisIntegrationRoutes;

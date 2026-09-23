@@ -28,6 +28,8 @@ export class TaskController {
             filter.priority = query.priority;
         if (query.isOverdue === "true")
             filter.isOverdue = true;
+        if (query.isHardwareQueue === "true" || query.isHardwareQueue === true)
+            filter.isHardwareQueue = true;
         // Filter by direct reports
         if (query.directReportsOnly === "true" ||
             query.directReportsOnly === true ||
@@ -52,6 +54,16 @@ export class TaskController {
         }
         else if (query.assignedToMe === "true" || query.assignedToMe === true || query.assignedToMe === "1") {
             filter.assignedToUserId = user.userId;
+        }
+        else {
+            const userRoles = Array.from(new Set([user.role, ...(Array.isArray(user.roles) ? user.roles : [])].filter(Boolean)));
+            const isStaffOrAdmin = userRoles.some((r) => ["owner", "admin", "hr_admin", "manager", "it_admin", "super_admin"].includes(r));
+            if (!isStaffOrAdmin) {
+                filter.$or = [
+                    { assignedToUserId: user.userId },
+                    { employeeId: user.userId },
+                ];
+            }
         }
         const pagination = {
             page: query.page ? parseInt(query.page, 10) : 1,
@@ -174,6 +186,17 @@ export class TaskController {
         return reply.status(200).send({
             success: true,
             message: "MDM callback processed successfully",
+            data: task,
+        });
+    };
+    confirmHardwareReceipt = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const body = request.body || {};
+        const task = await itHardwareService.confirmHardwareReceipt(user.organizationId, params.id, user.userId, body.note);
+        return reply.status(200).send({
+            success: true,
+            message: "Hardware receipt confirmed successfully",
             data: task,
         });
     };

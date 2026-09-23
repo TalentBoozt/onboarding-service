@@ -23,7 +23,23 @@ export const createTaskSchema = z.object({
     prerequisiteTaskIds: z.array(z.string()).optional(),
     hardwareMetadata: z
         .object({
-        deviceType: z.enum(["laptop", "monitor", "mobile", "security_key", "peripherals"]).optional(),
+        deviceType: z
+            .enum([
+            "laptop",
+            "desktop",
+            "monitor",
+            "mobile",
+            "security_key",
+            "peripherals",
+            "notebook",
+            "safety_kit",
+            "uniform",
+            "tools",
+            "badge_access",
+            "other",
+        ])
+            .or(z.string())
+            .optional(),
         serialNumber: z.string().optional(),
         assetTag: z.string().optional(),
         courierTrackingUrl: z.string().optional(),
@@ -37,7 +53,10 @@ export const createTaskSchema = z.object({
             uploadedAt: z.string().optional(),
         })
             .optional(),
-        mdmStatus: z.enum(["pending_dispatch", "dispatched", "enrolled", "failed"]).optional(),
+        mdmStatus: z
+            .enum(["pending_dispatch", "dispatched", "enrolled", "delivered", "failed"])
+            .or(z.string())
+            .optional(),
         mdmExternalId: z.string().optional(),
     })
         .optional(),
@@ -70,13 +89,30 @@ export const getTasksQuerySchema = z.object({
     category: z.string().optional(),
     priority: z.string().optional(),
     isOverdue: z.string().optional(),
+    isHardwareQueue: z.union([z.string(), z.boolean()]).optional(),
     page: z.string().optional(),
     limit: z.string().optional(),
     sortBy: z.string().optional(),
     sortOrder: z.enum(["asc", "desc"]).optional(),
 });
 export const updateHardwareMetadataSchema = z.object({
-    deviceType: z.enum(["laptop", "monitor", "mobile", "security_key", "peripherals"]).optional(),
+    deviceType: z
+        .enum([
+        "laptop",
+        "desktop",
+        "monitor",
+        "mobile",
+        "security_key",
+        "peripherals",
+        "notebook",
+        "safety_kit",
+        "uniform",
+        "tools",
+        "badge_access",
+        "other",
+    ])
+        .or(z.string())
+        .optional(),
     serialNumber: z.string().optional(),
     assetTag: z.string().optional(),
     courierTrackingUrl: z.string().optional(),
@@ -90,7 +126,10 @@ export const updateHardwareMetadataSchema = z.object({
         uploadedAt: z.string().optional(),
     })
         .optional(),
-    mdmStatus: z.enum(["pending_dispatch", "dispatched", "enrolled", "failed"]).optional(),
+    mdmStatus: z
+        .enum(["pending_dispatch", "dispatched", "enrolled", "delivered", "failed"])
+        .or(z.string())
+        .optional(),
     mdmExternalId: z.string().optional(),
 });
 export const attachHardwareReceiptSchema = z.object({

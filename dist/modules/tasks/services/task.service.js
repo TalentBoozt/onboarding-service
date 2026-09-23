@@ -69,6 +69,23 @@ export class TaskService {
             relativeOffsetDays: data.relativeOffsetDays,
             prerequisiteTaskIds: (data.prerequisiteTaskIds || []).map((id) => new mongoose.Types.ObjectId(id)),
             requiresVerification: data.requiresVerification ?? false,
+            hardwareMetadata: data.hardwareMetadata
+                ? {
+                    deviceType: data.hardwareMetadata.deviceType,
+                    serialNumber: data.hardwareMetadata.serialNumber?.trim() || undefined,
+                    assetTag: data.hardwareMetadata.assetTag?.trim() || undefined,
+                    courierTrackingUrl: data.hardwareMetadata.courierTrackingUrl?.trim() || undefined,
+                    courierProvider: data.hardwareMetadata.courierProvider?.trim() || undefined,
+                    shipDate: data.hardwareMetadata.shipDate ? new Date(data.hardwareMetadata.shipDate) : undefined,
+                    receiptAttachment: data.hardwareMetadata.receiptAttachment,
+                    mdmStatus: data.hardwareMetadata.mdmStatus || "pending_dispatch",
+                    mdmExternalId: data.hardwareMetadata.mdmExternalId,
+                    receivedConfirmedAt: data.hardwareMetadata.receivedConfirmedAt
+                        ? new Date(data.hardwareMetadata.receivedConfirmedAt)
+                        : undefined,
+                    receivedConfirmedBy: data.hardwareMetadata.receivedConfirmedBy,
+                }
+                : undefined,
             autoVerification: data.autoVerification
                 ? {
                     enabled: data.autoVerification.enabled ?? false,
@@ -253,11 +270,18 @@ export class TaskService {
                     : `Status changed to ${newStatus}`),
         });
         await updatedTask.save();
-        // Publish TASK_COMPLETED or TASK_VERIFIED event
-        if (newStatus === "completed" || newStatus === "verified") {
+        // Publish TASK_COMPLETED, TASK_VERIFIED, TASK_REVISION_REQUESTED or TASK_NEEDS_REVIEW event
+        if (newStatus === "completed" || newStatus === "verified" || newStatus === "revision_requested" || newStatus === "needs_review") {
             try {
+                let eventName = "TASK_COMPLETED";
+                if (newStatus === "verified")
+                    eventName = "TASK_VERIFIED";
+                else if (newStatus === "revision_requested")
+                    eventName = "TASK_REVISION_REQUESTED";
+                else if (newStatus === "needs_review")
+                    eventName = "TASK_NEEDS_REVIEW";
                 await eventBus.publish({
-                    eventName: newStatus === "verified" ? "TASK_VERIFIED" : "TASK_COMPLETED",
+                    eventName: eventName,
                     organizationId: orgId,
                     actorId: isSentinel
                         ? undefined
@@ -269,6 +293,7 @@ export class TaskService {
                         taskId: updatedTask._id.toString(),
                         title: updatedTask.title,
                         status: newStatus,
+                        note,
                         assignedToUserId: updatedTask.assignedToUserId?._id?.toString() ||
                             updatedTask.assignedToUserId?.toString(),
                         employeeId: updatedTask.employeeId?._id?.toString() ||

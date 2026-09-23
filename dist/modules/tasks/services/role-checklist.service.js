@@ -4,7 +4,68 @@ import Task from "../models/task.model.js";
 import User from "../../auth/models/user.model.js";
 import AppError from "../../../common/errors/app-error.js";
 import eventBus from "../../../infrastructure/events/event-bus.js";
+import NotificationService from "../../notifications/services/notification.service.js";
+import NotificationRepository from "../../notifications/repositories/notification.repository.js";
+const notificationService = new NotificationService(new NotificationRepository());
 export class RoleChecklistService {
+    /**
+     * Helper to dynamically resolve responsible user ID based on checklist item role
+     */
+    async resolveResponsibleUser(orgId, targetUser, role, fallbackCreatorId) {
+        const targetUserId = targetUser._id;
+        if (!role || role === "employee") {
+            return targetUserId;
+        }
+        if (role === "manager") {
+            const managerId = targetUser.employment?.managerId || targetUser.employment?.managerUserId;
+            if (managerId && mongoose.Types.ObjectId.isValid(managerId)) {
+                return new mongoose.Types.ObjectId(managerId.toString());
+            }
+        }
+        if (role === "it_admin" || role === "it") {
+            const itAdmin = await User.findOne({
+                organizationId: orgId,
+                "permissions.role": { $in: ["it_admin", "admin", "super_admin"] },
+                isDeleted: false,
+            });
+            if (itAdmin) {
+                return itAdmin._id;
+            }
+        }
+        if (role === "hr_admin" || role === "hr") {
+            const hrAdmin = await User.findOne({
+                organizationId: orgId,
+                "permissions.role": { $in: ["hr_admin", "admin", "super_admin"] },
+                isDeleted: false,
+            });
+            if (hrAdmin) {
+                return hrAdmin._id;
+            }
+        }
+        if (role === "buddy") {
+            try {
+                const BuddyAssignment = mongoose.model("BuddyAssignment");
+                const activeAssignment = await BuddyAssignment.findOne({
+                    organizationId: orgId,
+                    employeeUserId: targetUserId,
+                    status: "active",
+                    isDeleted: false,
+                });
+                if (activeAssignment?.buddyUserId) {
+                    return new mongoose.Types.ObjectId(activeAssignment.buddyUserId.toString());
+                }
+            }
+            catch (err) {
+                // model not registered or not found
+            }
+        }
+        // Default fallback: Manager -> Fallback Creator -> Target User
+        const managerId = targetUser.employment?.managerId || targetUser.employment?.managerUserId;
+        if (managerId && mongoose.Types.ObjectId.isValid(managerId)) {
+            return new mongoose.Types.ObjectId(managerId.toString());
+        }
+        return fallbackCreatorId || targetUserId;
+    }
     async listTemplates(orgId, filters) {
         const query = {
             organizationId: new mongoose.Types.ObjectId(orgId.toString()),
@@ -199,9 +260,10 @@ export class RoleChecklistService {
                 if (item.prerequisiteItemIndex !== undefined && itemIndexToTaskId.has(item.prerequisiteItemIndex)) {
                     prerequisiteTaskIds.push(itemIndexToTaskId.get(item.prerequisiteItemIndex));
                 }
+                const assignedUserId = await this.resolveResponsibleUser(new mongoose.Types.ObjectId(orgId.toString()), user, item.responsibleRole, options?.creatorId ? new mongoose.Types.ObjectId(options.creatorId.toString()) : tmpl.createdBy);
                 const newTask = new Task({
                     organizationId: new mongoose.Types.ObjectId(orgId.toString()),
-                    assignedToUserId: new mongoose.Types.ObjectId(userId.toString()),
+                    assignedToUserId: assignedUserId,
                     employeeId: new mongoose.Types.ObjectId(userId.toString()),
                     createdBy: options?.creatorId ? new mongoose.Types.ObjectId(options.creatorId.toString()) : tmpl.createdBy,
                     title: item.title,
@@ -225,8 +287,47 @@ export class RoleChecklistService {
                 itemIndexToTaskId.set(i, newTask._id);
                 allTaskIds.push(newTask._id);
                 totalTasksCreated++;
+                const employeeName = `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() || "New Hire";
+                const managerId = user.employment?.managerId || user.employment?.managerUserId;
+                // Notify responsible user
+                try {
+                    if (assignedUserId.toString() !== userId.toString()) {
+                        await notificationService.createNotification({
+                            organizationId: orgId,
+                            recipientUserId: assignedUserId,
+                            type: "task_assigned",
+                            title: `New Onboarding Task for ${employeeName}`,
+                            message: `Task "${item.title}" (${item.category || "general"}) assigned to you for new hire ${employeeName}. Due by ${calculatedDueDate.toLocaleDateString()}.`,
+                            priority: item.priority === "critical" || item.priority === "high" ? "high" : "medium",
+                            data: {
+                                taskId: newTask._id.toString(),
+                                employeeId: userId.toString(),
+                                deepLink: "/tasks",
+                            },
+                        });
+                    }
+                    else {
+                        // Task assigned directly to the new hire
+                        await notificationService.createNotification({
+                            organizationId: orgId,
+                            recipientUserId: userId,
+                            type: "task_assigned",
+                            title: `New Onboarding Task: ${item.title}`,
+                            message: `You have been assigned "${item.title}". Due by ${calculatedDueDate.toLocaleDateString()}.`,
+                            priority: item.priority === "critical" || item.priority === "high" ? "high" : "medium",
+                            data: {
+                                taskId: newTask._id.toString(),
+                                employeeId: userId.toString(),
+                                deepLink: "/tasks",
+                            },
+                        });
+                    }
+                }
+                catch (err) {
+                    console.warn("[RoleChecklistService] Notification dispatch error:", err);
+                }
                 // Publish event on EventBus
-                eventBus.publish({
+                await eventBus.publish({
                     eventName: "TASK_CREATED",
                     organizationId: new mongoose.Types.ObjectId(orgId.toString()),
                     actorId: new mongoose.Types.ObjectId(userId.toString()),
@@ -234,11 +335,55 @@ export class RoleChecklistService {
                     payload: {
                         taskId: newTask._id.toString(),
                         title: newTask.title,
-                        assignedToUserId: userId.toString(),
+                        assignedToUserId: assignedUserId.toString(),
+                        employeeId: userId.toString(),
                         dueDate: calculatedDueDate,
                         sourceTemplateTitle: tmpl.title,
                     },
                 }).catch((err) => console.warn("[RoleChecklistService] Event publish error:", err));
+            }
+            // Summary notification for checklist template assignment
+            const employeeName = `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() || "New Hire";
+            const managerId = user.employment?.managerId || user.employment?.managerUserId;
+            // Notify relevant user: Employee checklist overview
+            try {
+                await notificationService.createNotification({
+                    organizationId: orgId,
+                    recipientUserId: userId,
+                    type: "checklist_assigned",
+                    title: `Role Onboarding Checklist: ${tmpl.title}`,
+                    message: `Your customized role checklist "${tmpl.title}" has been provisioned with ${tmpl.items.length} tasks.`,
+                    priority: "medium",
+                    data: {
+                        checklistId: tmpl._id.toString(),
+                        employeeId: userId.toString(),
+                        deepLink: "/tasks",
+                    },
+                });
+            }
+            catch (err) {
+                console.warn("[RoleChecklistService] Employee checklist notification error:", err);
+            }
+            // Notify relevant user: Manager
+            if (managerId && managerId.toString() !== userId.toString()) {
+                try {
+                    await notificationService.createNotification({
+                        organizationId: orgId,
+                        recipientUserId: managerId,
+                        type: "checklist_assigned",
+                        title: `Role Checklist Assigned: ${employeeName}`,
+                        message: `Onboarding checklist "${tmpl.title}" (${tmpl.items.length} tasks) has been assigned for ${employeeName}.`,
+                        priority: "medium",
+                        data: {
+                            checklistId: tmpl._id.toString(),
+                            employeeId: userId.toString(),
+                            deepLink: "/tasks",
+                        },
+                    });
+                }
+                catch (err) {
+                    console.warn("[RoleChecklistService] Manager checklist notification error:", err);
+                }
             }
         }
         return {
@@ -271,9 +416,10 @@ export class RoleChecklistService {
             if (item.prerequisiteItemIndex !== undefined && itemIndexToTaskId.has(item.prerequisiteItemIndex)) {
                 prerequisiteTaskIds.push(itemIndexToTaskId.get(item.prerequisiteItemIndex));
             }
+            const assignedUserId = await this.resolveResponsibleUser(new mongoose.Types.ObjectId(orgId.toString()), user, item.responsibleRole, new mongoose.Types.ObjectId(assignedBy.toString()));
             const newTask = new Task({
                 organizationId: new mongoose.Types.ObjectId(orgId.toString()),
-                assignedToUserId: new mongoose.Types.ObjectId(userId.toString()),
+                assignedToUserId: assignedUserId,
                 employeeId: new mongoose.Types.ObjectId(userId.toString()),
                 createdBy: new mongoose.Types.ObjectId(assignedBy.toString()),
                 title: item.title,
@@ -296,7 +442,115 @@ export class RoleChecklistService {
             await newTask.save();
             itemIndexToTaskId.set(i, newTask._id);
             createdTasks.push(newTask);
+            const employeeName = `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() || "Employee";
+            // Notify responsible user
+            try {
+                if (assignedUserId.toString() !== userId.toString()) {
+                    await notificationService.createNotification({
+                        organizationId: orgId,
+                        recipientUserId: assignedUserId,
+                        type: "task_assigned",
+                        title: `New Onboarding Task for ${employeeName}`,
+                        message: `Task "${item.title}" (${item.category || "general"}) assigned to you for ${employeeName}. Due by ${calculatedDueDate.toLocaleDateString()}.`,
+                        priority: item.priority === "critical" || item.priority === "high" ? "high" : "medium",
+                        data: {
+                            taskId: newTask._id.toString(),
+                            employeeId: userId.toString(),
+                            deepLink: "/tasks",
+                        },
+                    });
+                }
+                else {
+                    await notificationService.createNotification({
+                        organizationId: orgId,
+                        recipientUserId: userId,
+                        type: "task_assigned",
+                        title: `New Onboarding Task: ${item.title}`,
+                        message: `You have been assigned "${item.title}". Due by ${calculatedDueDate.toLocaleDateString()}.`,
+                        priority: item.priority === "critical" || item.priority === "high" ? "high" : "medium",
+                        data: {
+                            taskId: newTask._id.toString(),
+                            employeeId: userId.toString(),
+                            deepLink: "/tasks",
+                        },
+                    });
+                }
+            }
+            catch (err) {
+                console.warn("[RoleChecklistService] Notification dispatch error:", err);
+            }
+            // Publish TASK_CREATED event
+            await eventBus.publish({
+                eventName: "TASK_CREATED",
+                organizationId: new mongoose.Types.ObjectId(orgId.toString()),
+                actorId: new mongoose.Types.ObjectId(assignedBy.toString()),
+                entityId: newTask._id,
+                payload: {
+                    taskId: newTask._id.toString(),
+                    title: newTask.title,
+                    assignedToUserId: assignedUserId.toString(),
+                    employeeId: userId.toString(),
+                    dueDate: calculatedDueDate,
+                    sourceTemplateTitle: template.title,
+                },
+            }).catch((err) => console.warn("[RoleChecklistService] Event publish error:", err));
         }
+        const employeeName = `${user.profile?.firstName || ""} ${user.profile?.lastName || ""}`.trim() || "Employee";
+        const managerId = user.employment?.managerId || user.employment?.managerUserId;
+        // Notify relevant user: Employee
+        try {
+            await notificationService.createNotification({
+                organizationId: orgId,
+                recipientUserId: userId,
+                type: "checklist_assigned",
+                title: `Onboarding Checklist Assigned: ${template.title}`,
+                message: `${createdTasks.length} onboarding tasks from "${template.title}" have been added to your onboarding roadmap.`,
+                priority: "medium",
+                data: {
+                    checklistId: template._id.toString(),
+                    employeeId: userId.toString(),
+                    deepLink: "/tasks",
+                },
+            });
+        }
+        catch (err) {
+            console.warn("[RoleChecklistService] Employee notification error:", err);
+        }
+        // Notify relevant user: Manager
+        if (managerId && managerId.toString() !== userId.toString()) {
+            try {
+                await notificationService.createNotification({
+                    organizationId: orgId,
+                    recipientUserId: managerId,
+                    type: "checklist_assigned",
+                    title: `Checklist Assigned: ${employeeName}`,
+                    message: `Checklist "${template.title}" with ${createdTasks.length} tasks has been assigned to ${employeeName}.`,
+                    priority: "medium",
+                    data: {
+                        checklistId: template._id.toString(),
+                        employeeId: userId.toString(),
+                        deepLink: "/tasks",
+                    },
+                });
+            }
+            catch (err) {
+                console.warn("[RoleChecklistService] Manager notification error:", err);
+            }
+        }
+        // Publish CHECKLIST_ASSIGNED event
+        eventBus.publish({
+            eventName: "CHECKLIST_ASSIGNED",
+            organizationId: new mongoose.Types.ObjectId(orgId.toString()),
+            actorId: new mongoose.Types.ObjectId(assignedBy.toString()),
+            entityId: template._id,
+            payload: {
+                checklistId: template._id.toString(),
+                checklistTitle: template.title,
+                employeeId: userId.toString(),
+                assignedBy: assignedBy.toString(),
+                taskCount: createdTasks.length,
+            },
+        }).catch((err) => console.warn("[RoleChecklistService] Event publish error:", err));
         return {
             success: true,
             message: `Assigned ${createdTasks.length} tasks from "${template.title}" to ${user.profile?.fullName || user.auth?.email}`,

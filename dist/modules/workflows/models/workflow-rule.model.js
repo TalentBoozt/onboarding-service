@@ -15,7 +15,7 @@ const WorkflowConditionSchema = new Schema({
 const WorkflowActionSchema = new Schema({
     type: {
         type: String,
-        enum: ["assign_journey", "create_task", "send_notification", "trigger_buddy", "assign_document", "trigger_webhook", "delay"],
+        enum: ["assign_journey", "create_task", "send_notification", "trigger_buddy", "assign_document", "trigger_webhook", "delay", "assign_milestone", "assign_checklist"],
         required: true,
     },
     params: {
@@ -39,9 +39,11 @@ const WorkflowActionSchema = new Schema({
         },
         taskAssigneeRole: {
             type: String,
-            enum: ["employee", "manager", "hr", "it"],
+            enum: ["employee", "manager", "hr", "it", "it_admin", "hr_admin", "buddy"],
             default: "employee",
         },
+        relativeOffsetDays: { type: Number, default: 7 },
+        checklistTemplateId: { type: String },
         notificationTitle: { type: String },
         notificationMessage: { type: String },
         notificationChannel: { type: String, enum: ["in_app", "email"], default: "in_app" },
@@ -49,6 +51,8 @@ const WorkflowActionSchema = new Schema({
         buddyUserId: { type: String },
         webhookUrl: { type: String },
         delayMinutes: { type: Number, default: 0 },
+        templateId: { type: String },
+        targetDay: { type: Number },
     },
 }, { _id: false });
 const WorkflowRuleSchema = new Schema({
@@ -57,7 +61,7 @@ const WorkflowRuleSchema = new Schema({
     description: { type: String, trim: true },
     triggerType: {
         type: String,
-        enum: ["user_created", "journey_completed", "task_completed", "stage_entered", "checkin_due"],
+        enum: ["user_created", "journey_completed", "task_completed", "stage_entered", "checkin_due", "milestone_completed"],
         required: true,
     },
     conditions: [WorkflowConditionSchema],

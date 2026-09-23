@@ -105,6 +105,28 @@ export class HRISIntegrationController {
             data: logs,
         });
     };
+    rotateWebhookSecret = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const integration = await this.service.rotateWebhookSecret(user.organizationId, params.id);
+        return reply.status(200).send({
+            success: true,
+            message: "Webhook secret rotated successfully",
+            data: {
+                webhookSecret: integration.webhookSecret,
+            },
+        });
+    };
+    retryDLQEvent = async (request, reply) => {
+        const user = request.user;
+        const params = request.params;
+        const result = await this.service.retryDLQEvent(user.organizationId, params.id, params.eventId);
+        return reply.status(200).send({
+            success: true,
+            message: "DLQ event reprocessed successfully",
+            data: result,
+        });
+    };
     handleWebhook = async (request, reply) => {
         const params = request.params;
         const signature = (request.headers["x-signature"] ||

@@ -19,40 +19,40 @@ export async function journeyRoutes(app) {
     app.get("/courses/:id", { preHandler: [extractLocale] }, controller.getJourney);
     // POST /api/v1/journeys
     app.post("/", {
-        preHandler: [requireRole(["owner", "admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
         schema: { body: createJourneySchema },
     }, controller.createJourney);
     // PATCH /api/v1/journeys/:id
     app.patch("/:id", {
-        preHandler: [requireRole(["owner", "admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
         schema: { body: updateJourneySchema },
     }, controller.updateJourney);
     // DELETE /api/v1/journeys/:id
-    app.delete("/:id", { preHandler: [requireRole(["owner", "admin"])] }, controller.deleteJourney);
+    app.delete("/:id", { preHandler: [requireRole(["owner", "admin", "hr_admin"])] }, controller.deleteJourney);
     // POST /api/v1/journeys/:id/publish
-    app.post("/:id/publish", { preHandler: [requireRole(["owner", "admin"])] }, controller.publishJourney);
+    app.post("/:id/publish", { preHandler: [requireRole(["owner", "admin", "hr_admin"])] }, controller.publishJourney);
     // POST /api/v1/journeys/:id/archive
-    app.post("/:id/archive", { preHandler: [requireRole(["owner", "admin"])] }, controller.archiveJourney);
+    app.post("/:id/archive", { preHandler: [requireRole(["owner", "admin", "hr_admin"])] }, controller.archiveJourney);
     // POST /api/v1/journeys/:id/duplicate
     app.post("/:id/duplicate", {
-        preHandler: [requireRole(["owner", "admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
         schema: { body: duplicateJourneySchema },
     }, controller.duplicateJourney);
     // GET /api/v1/journeys/:id/analytics
     app.get("/:id/analytics", { preHandler: [requireRole(["owner", "admin", "manager"])] }, controller.getJourneyAnalytics);
     // POST /api/v1/journeys/:id/assignment-preview
-    app.post("/:id/assignment-preview", { preHandler: [requireRole(["owner", "admin"])] }, controller.previewSmartAssignment);
+    app.post("/:id/assignment-preview", { preHandler: [requireRole(["owner", "admin", "hr_admin"])] }, controller.previewSmartAssignment);
     // POST /api/v1/journeys/:id/smart-assign
-    app.post("/:id/smart-assign", { preHandler: [requireRole(["owner", "admin"])] }, controller.executeSmartAssignment);
+    app.post("/:id/smart-assign", { preHandler: [requireRole(["owner", "admin", "hr_admin"])] }, controller.executeSmartAssignment);
     // PATCH /api/v1/journeys/:id/targeting
-    app.patch("/:id/targeting", { preHandler: [requireRole(["owner", "admin"])] }, controller.updateTargeting);
+    app.patch("/:id/targeting", { preHandler: [requireRole(["owner", "admin", "hr_admin"])] }, controller.updateTargeting);
     // GET /api/v1/journeys/:id/prerequisites-check
     app.get("/:id/prerequisites-check", controller.checkPrerequisites);
     // POST /api/v1/journeys/:id/clone
-    app.post("/:id/clone", { preHandler: [requireRole(["owner", "admin"])] }, controller.cloneJourney);
+    app.post("/:id/clone", { preHandler: [requireRole(["owner", "admin", "hr_admin"])] }, controller.cloneJourney);
     // PUT /api/v1/journeys/:id/reorder
-    app.put("/:id/reorder", { preHandler: [requireRole(["owner", "admin"])] }, controller.reorderCurriculum);
+    app.put("/:id/reorder", { preHandler: [requireRole(["owner", "admin", "hr_admin"])] }, controller.reorderCurriculum);
     // POST /api/v1/journeys/reminders/dispatch
-    app.post("/reminders/dispatch", { preHandler: [requireRole(["owner", "admin"])] }, controller.dispatchReminders);
+    app.post("/reminders/dispatch", { preHandler: [requireRole(["owner", "admin", "hr_admin"])] }, controller.dispatchReminders);
 }
 export default journeyRoutes;
