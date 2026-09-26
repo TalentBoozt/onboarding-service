@@ -1,4 +1,5 @@
 import { FeatureTelemetryService } from "../../super-admin/services/feature-telemetry.service.js";
+import { getClientIp } from "../../../common/utils/ip.util.js";
 export class DocumentController {
     documentService;
     constructor(documentService) {
@@ -66,7 +67,7 @@ export class DocumentController {
         const user = request.user;
         const params = request.params;
         const reqMetadata = {
-            ipAddress: request.ip,
+            ipAddress: getClientIp(request),
             userAgent: request.headers["user-agent"],
         };
         const assignment = await this.documentService.getDocumentAssignment(user.organizationId, params.id, user.userId, user.role, reqMetadata);
@@ -81,7 +82,7 @@ export class DocumentController {
         const params = request.params;
         const body = request.body;
         const reqMetadata = {
-            ipAddress: request.ip,
+            ipAddress: getClientIp(request),
             userAgent: request.headers["user-agent"],
         };
         const assignment = await this.documentService.signDocument(user.organizationId, params.id, user.userId, body, reqMetadata, user.role || (user.scope ? "frontline_worker_kiosk" : undefined));

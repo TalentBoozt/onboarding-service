@@ -1,6 +1,6 @@
 import { HROperationsController } from "../controllers/hr-operations.controller.js";
 import { HROperationsService } from "../services/hr-operations.service.js";
-import { authenticate, requireRole } from "../../../middleware/auth.middleware.js";
+import { authenticate, requireRole, requireFeatureFlag } from "../../../middleware/auth.middleware.js";
 import { updateLifecycleStateSchema, executeHRBulkActionSchema, } from "../schemas/hr-operations.schema.js";
 export async function hrOperationsRoutes(app) {
     const service = new HROperationsService();
@@ -10,12 +10,12 @@ export async function hrOperationsRoutes(app) {
         const staffOnly = requireRole(["owner", "admin", "hr_admin", "manager"]);
         const adminOnly = requireRole(["owner", "admin", "hr_admin"]);
         // Dashboard metrics & exception queue
-        authApp.get("/dashboard", { preHandler: [staffOnly] }, controller.getDashboardMetrics);
-        authApp.get("/dashboard-metrics", { preHandler: [staffOnly] }, controller.getDashboardMetrics);
-        authApp.get("/exceptions", { preHandler: [staffOnly] }, controller.getExceptionQueue);
+        authApp.get("/dashboard", { preHandler: [staffOnly, requireFeatureFlag("hr_ops_dashboard")] }, controller.getDashboardMetrics);
+        authApp.get("/dashboard-metrics", { preHandler: [staffOnly, requireFeatureFlag("hr_ops_dashboard")] }, controller.getDashboardMetrics);
+        authApp.get("/exceptions", { preHandler: [staffOnly, requireFeatureFlag("hr_exceptions")] }, controller.getExceptionQueue);
         // Handover operations - strictly Owner & Admin only
-        authApp.post("/handover/:userId", { preHandler: [adminOnly] }, controller.completeHandover);
-        authApp.post("/handover/:userId/complete", { preHandler: [adminOnly] }, controller.completeHandover);
+        authApp.post("/handover/:userId", { preHandler: [adminOnly, requireFeatureFlag("graduation_handover")] }, controller.completeHandover);
+        authApp.post("/handover/:userId/complete", { preHandler: [adminOnly, requireFeatureFlag("graduation_handover")] }, controller.completeHandover);
         authApp.put("/lifecycle/:userId/state", { preHandler: [adminOnly], schema: { body: updateLifecycleStateSchema } }, controller.updateLifecycleState);
         authApp.post("/bulk-action", { preHandler: [adminOnly], schema: { body: executeHRBulkActionSchema } }, controller.executeBulkAction);
         authApp.get("/compliance-report", { preHandler: [staffOnly] }, controller.generateComplianceReport);

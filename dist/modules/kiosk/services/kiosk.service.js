@@ -5,6 +5,8 @@ import { KioskJourneySchema } from "../validation/journey.schema.js";
 import { KioskJourneyModel } from "../models/kiosk-journey.model.js";
 import KioskDeviceModel from "../models/kiosk-device.model.js";
 import User from "../../auth/models/user.model.js";
+import { Organization } from "../../organizations/models/organization.model.js";
+import { PackageModel } from "../../super-admin/models/package.model.js";
 export class KioskService {
     journeyRepo;
     deviceRepo;
@@ -80,8 +82,43 @@ export class KioskService {
     async listJourneys(filter, pagination) {
         return this.journeyRepo.find(filter, pagination);
     }
+    async resolveMaxKiosks(org) {
+        let maxKiosks = org?.limits?.maxKiosks;
+        if (maxKiosks === undefined || maxKiosks === null) {
+            if (org?.packageId) {
+                const pkg = await PackageModel.findById(org.packageId);
+                maxKiosks = pkg?.limits?.maxKiosks !== undefined ? pkg.limits.maxKiosks : 5;
+            }
+            else {
+                maxKiosks = 5;
+            }
+        }
+        const hasKioskAddOn = (org?.subscription?.activeAddOns || []).includes("kiosk_mode");
+        if (maxKiosks === 0 && hasKioskAddOn) {
+            maxKiosks = 5;
+        }
+        return maxKiosks;
+    }
     // --- Device Management ---
     async generatePairingCode(orgId, deviceId) {
+        const org = await Organization.findById(orgId);
+        if (!org) {
+            throw new AppError(404, "NOT_FOUND", "Organization not found");
+        }
+        const maxKiosks = await this.resolveMaxKiosks(org);
+        const existing = await this.deviceRepo.findByFingerprint(deviceId);
+        if (!existing) {
+            const currentKiosksCount = await KioskDeviceModel.countDocuments({
+                $or: [
+                    { organizationId: new mongoose.Types.ObjectId(orgId) },
+                    { organizationId: orgId.toString() },
+                ],
+                status: { $ne: "decommissioned" }
+            });
+            if (currentKiosksCount >= maxKiosks) {
+                throw new AppError(403, "KIOSK_LIMIT_REACHED", `Organization kiosk device limit reached (${currentKiosksCount}/${maxKiosks}). Please upgrade your plan to pair more kiosks.`);
+            }
+        }
         // 15-minute activation window (900 seconds)
         const code = this.securityService.generatePairingCode(orgId, deviceId, 900000);
         return { code, expiresInSeconds: 900 };
@@ -122,6 +159,19 @@ export class KioskService {
             });
         }
         else {
+            // Verify quota before registering new kiosk device
+            const org = await Organization.findById(orgId);
+            const maxKiosks = await this.resolveMaxKiosks(org);
+            const currentKiosksCount = await KioskDeviceModel.countDocuments({
+                $or: [
+                    { organizationId: new mongoose.Types.ObjectId(orgId) },
+                    { organizationId: orgId.toString() },
+                ],
+                status: { $ne: "decommissioned" }
+            });
+            if (currentKiosksCount >= maxKiosks) {
+                throw new AppError(403, "KIOSK_LIMIT_REACHED", `Organization kiosk device limit reached (${currentKiosksCount}/${maxKiosks}). Please upgrade your plan to pair more kiosks.`);
+            }
             // Register new device
             device = await this.deviceRepo.register({
                 organizationId: new mongoose.Types.ObjectId(orgId),

@@ -1,6 +1,7 @@
 import AppError from "../../../common/errors/app-error.js";
 import { demoSessionService } from "../services/demo-session.service.js";
 import { DemoResetService } from "../services/demo-reset.service.js";
+import { getClientIp } from "../../../common/utils/ip.util.js";
 /**
  * Fastify preHandler hook ensuring the request carries a valid, active demo session.
  */
@@ -20,7 +21,7 @@ export async function demoAuthenticate(request, _reply) {
             throw new AppError(401, "INVALID_DEMO_TOKEN", "Token is not a valid demo session credential.");
         }
         // Validate active session in isolated demo database
-        await demoSessionService.validateSession(payload.sessionId, request.ip);
+        await demoSessionService.validateSession(payload.sessionId, getClientIp(request));
         // Attach demo identity to request context
         request.demoUser = {
             id: payload.demoUserId,

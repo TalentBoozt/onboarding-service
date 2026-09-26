@@ -1,4 +1,5 @@
 import { onboardingCaseService } from "../services/onboarding-case.service.js";
+import { getClientIp } from "../../../common/utils/ip.util.js";
 export class OnboardingCaseController {
     service;
     constructor(service = onboardingCaseService) {
@@ -28,7 +29,7 @@ export class OnboardingCaseController {
         const { caseId } = request.params;
         const resolution = request.body;
         const result = await this.service.resolveException(caseId, organizationId, actorUserId, resolution, {
-            ipAddress: request.ip,
+            ipAddress: getClientIp(request),
             userAgent: request.headers["user-agent"],
         });
         return reply.status(200).send(result);

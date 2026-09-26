@@ -23,7 +23,11 @@ export class AICourseBuilderService {
         // Synthesize using real configured AI provider
         if (!activeClient.isFallbackMock) {
             try {
-                const generatedModules = await activeClient.service.generateCourseCurriculum(activeClient.config, activeClient.secrets, prompt, targetRole, department, level, moduleCount, groundedArticles);
+                const generatedModules = await activeClient.service.generateCourseCurriculum(activeClient.config, activeClient.secrets, prompt, targetRole, department, level, moduleCount, groundedArticles, {
+                    organizationId: orgObjectId,
+                    userId: userObjectId,
+                    feature: "ai_course_builder",
+                });
                 if (Array.isArray(generatedModules) && generatedModules.length > 0) {
                     modules = generatedModules.map((m) => ({
                         moduleId: new mongoose.Types.ObjectId().toString(),

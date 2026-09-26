@@ -3,6 +3,7 @@ import { demoAuthService } from "../services/demo-auth.service.js";
 import { demoEmailSinkService } from "../services/demo-email-sink.service.js";
 import { getDemoJourneyModel, getDemoTaskModel, getDemoDocumentModel, getDemoUserModel, getDemoTenantModel, getDemoActivityLogModel, } from "../models/index.js";
 import AppError from "../../../common/errors/app-error.js";
+import { getClientIp } from "../../../common/utils/ip.util.js";
 // Knowledge Base Category ID Mapping matching client CATEGORY_MAP
 const KB_CATEGORY_ID_MAP = {
     "Company Policies": "658c1f000000000000000001",
@@ -360,7 +361,7 @@ export class DemoAppController {
             throw new AppError(400, "VALIDATION_ERROR", "Email and password are required.");
         }
         const userAgent = request.headers["user-agent"] || "unknown";
-        const ip = request.headers["x-forwarded-for"] || request.ip;
+        const ip = getClientIp(request);
         const result = await demoAuthService.login(email, password, request.server.jwt.sign, ip, userAgent, deviceInfo);
         return reply.status(200).send({
             success: true,

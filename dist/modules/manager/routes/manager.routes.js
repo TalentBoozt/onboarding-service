@@ -1,6 +1,6 @@
 import { ManagerController } from "../controllers/manager.controller.js";
 import { ManagerService } from "../services/manager.service.js";
-import { authenticate, requireRole } from "../../../middleware/auth.middleware.js";
+import { authenticate, requireRole, requireFeatureFlag } from "../../../middleware/auth.middleware.js";
 import { nudgeDirectReportSchema, signOffDirectReportSchema } from "../schemas/manager.schema.js";
 export async function managerRoutes(app) {
     const service = new ManagerService();
@@ -8,6 +8,7 @@ export async function managerRoutes(app) {
     // Authenticate all routes & enforce Manager / Admin / Owner role
     app.addHook("preHandler", authenticate);
     app.addHook("preHandler", requireRole(["owner", "admin", "manager"]));
+    app.addHook("preHandler", requireFeatureFlag("manager_dashboard"));
     // GET /api/v1/manager/dashboard
     app.get("/dashboard", controller.getManagerDashboard);
     // GET /api/v1/manager/team-overview

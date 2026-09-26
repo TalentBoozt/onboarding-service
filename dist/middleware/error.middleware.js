@@ -1,13 +1,63 @@
 import { ZodError } from "zod";
 import AppError from "../common/errors/app-error.js";
+import SystemLogBuffer from "../infrastructure/telemetry/system-log-buffer.js";
+import { AuditLog } from "../modules/audit-logs/models/audit-log.model.js";
+import { getClientIp } from "../common/utils/ip.util.js";
 export function errorHandler(error, request, reply) {
     // 1. Log the error
-    const isClientError = error.statusCode && error.statusCode < 500;
+    const statusCode = error.statusCode || 500;
+    const isClientError = statusCode < 500;
+    const severity = statusCode >= 500 ? "critical" : statusCode >= 400 ? "warning" : "info";
     if (isClientError) {
         request.log.warn({ err: error, reqId: request.id }, `⚠️ Client Error: ${error.message}`);
     }
     else {
         request.log.error({ err: error, reqId: request.id }, `💥 Server Error: ${error.message}`);
+    }
+    // 1b. Capture in-memory SystemLogBuffer & persist critical/system errors to AuditLog
+    const orgId = request.user?.organizationId?.toString();
+    const userId = request.user?.userId?.toString();
+    const cleanRoute = (request.routeOptions?.url || request.url).split("?")[0];
+    SystemLogBuffer.record({
+        level: severity,
+        source: "server",
+        eventType: `HTTP_${statusCode}`,
+        action: "error",
+        description: `${request.method} ${cleanRoute} failed [${statusCode}]: ${error.message}`,
+        organizationId: orgId,
+        metadata: {
+            url: request.url,
+            method: request.method,
+            statusCode,
+            code: error.code,
+            clientIp: getClientIp(request),
+        },
+    });
+    if (statusCode >= 500 || error.code === "SECURITY_ALERT" || error.code === "RAPID_IP_CHANGE") {
+        AuditLog.create({
+            organizationId: orgId,
+            actorUserId: userId,
+            actorType: "system",
+            eventCategory: "system",
+            eventType: `HTTP_${statusCode}_ERROR`,
+            resourceType: "http_server",
+            action: "error",
+            description: `${request.method} ${cleanRoute} [${statusCode}]: ${error.message}`,
+            metadata: {
+                url: request.url,
+                method: request.method,
+                statusCode,
+                code: error.code,
+                stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
+            },
+            request: {
+                ipAddress: getClientIp(request),
+                userAgent: request.headers["user-agent"],
+                method: request.method,
+                endpoint: cleanRoute,
+            },
+            severity: "critical",
+        }).catch(() => { });
     }
     // 2. Handle AppError (custom operational errors)
     if (error instanceof AppError) {

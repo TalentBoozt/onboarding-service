@@ -1,5 +1,7 @@
 import AppError from "../../../common/errors/app-error.js";
 import mongoose from "mongoose";
+import { Organization } from "../../organizations/models/organization.model.js";
+import { Journey } from "../models/journey.model.js";
 export class JourneyService {
     journeyRepository;
     constructor(journeyRepository) {
@@ -25,6 +27,18 @@ export class JourneyService {
         return this.journeyRepository.find(filter, pagination);
     }
     async createJourney(orgId, journeyData, userId) {
+        const org = await Organization.findById(orgId);
+        if (!org) {
+            throw new AppError(404, "NOT_FOUND", "Organization not found");
+        }
+        const maxJourneys = org.limits?.maxJourneys ?? 20;
+        const currentJourneysCount = await Journey.countDocuments({
+            organizationId: new mongoose.Types.ObjectId(orgId),
+            isDeleted: false,
+        });
+        if (currentJourneysCount >= maxJourneys) {
+            throw new AppError(403, "JOURNEY_LIMIT_EXCEEDED", `Organization journey limit reached (${currentJourneysCount}/${maxJourneys}). Please upgrade your plan to create more journeys.`);
+        }
         const slug = this.slugify(journeyData.title) + "-" + Math.random().toString(36).substring(2, 6);
         const newJourney = {
             organizationId: new mongoose.Types.ObjectId(orgId),

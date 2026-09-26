@@ -4,7 +4,7 @@ import crypto from "crypto";
 import UserRepository from "../repositories/user.repository.js";
 import SessionRepository from "../repositories/session.repository.js";
 import loginSchema from "../schemas/login.schema.js";
-import { authenticate } from "../../../middleware/auth.middleware.js";
+import { authenticate, optionalAuthenticate } from "../../../middleware/auth.middleware.js";
 import { z } from "zod";
 import mongoose from "mongoose";
 import AppError from "../../../common/errors/app-error.js";
@@ -15,6 +15,9 @@ import { Journey } from "../../journeys/models/journey.model.js";
 import { EmailService } from "../../../shared/email/email.service.js";
 import FeatureFlagService from "../../super-admin/services/feature-flag.service.js";
 import { appConfig } from "../../../config/index.js";
+import { getClientIp } from "../../../common/utils/ip.util.js";
+import Package from "../../super-admin/models/package.model.js";
+import FeatureFlag from "../../super-admin/models/feature-flag.model.js";
 const registerSchema = z.object({
     orgName: z.string().min(1, "Organization name is required"),
     orgSlug: z.string().min(1, "Workspace slug is required"),
@@ -59,10 +62,35 @@ export async function authRoutes(app) {
         // 4. Create Organization
         const orgId = new mongoose.Types.ObjectId();
         const userId = new mongoose.Types.ObjectId();
+        // 4. Resolve default public package (Freemium)
+        const defaultPkg = (await Package.findOne({ isDefault: true, status: "active" })) || (await Package.findOne({ slug: "freemium" }));
         const newOrg = new Organization({
             _id: orgId,
             name: orgName.trim(),
             slug: slugLower,
+            plan: defaultPkg?.name || "Freemium Community",
+            packageId: defaultPkg?._id,
+            packageSlug: defaultPkg?.slug || "freemium",
+            limits: {
+                maxUsers: defaultPkg?.limits?.maxUsers || 10,
+                maxStorageGb: defaultPkg?.limits?.maxStorageGb || 2,
+                maxJourneys: defaultPkg?.limits?.maxJourneys || 3,
+                maxKiosks: defaultPkg?.limits?.maxKiosks || 0,
+                aiTokenMonthlyLimit: defaultPkg?.limits?.aiTokenMonthlyLimit || 50000,
+            },
+            subscription: {
+                packageId: defaultPkg?._id,
+                packageName: defaultPkg?.name || "Freemium Community",
+                plan: defaultPkg?.name || "Freemium Community",
+                status: "active",
+                billingInterval: "monthly",
+                basePrice: 0,
+                addOnPrice: 0,
+                finalPrice: 0,
+                currency: "USD",
+                activeAddOns: [],
+                seatLimit: defaultPkg?.limits?.maxUsers || 10,
+            },
             supportEmail: supportEmail ? supportEmail.toLowerCase().trim() : emailLower,
             createdBy: userId,
             branding: {
@@ -89,6 +117,17 @@ export async function authRoutes(app) {
             }
         });
         await newOrg.save();
+        // Synchronize initial feature flags for default package
+        if (defaultPkg) {
+            const enabledKeys = defaultPkg.features.filter((f) => f.enabled).map((f) => f.featureKey);
+            const disabledKeys = defaultPkg.features.filter((f) => !f.enabled).map((f) => f.featureKey);
+            if (enabledKeys.length > 0) {
+                await FeatureFlag.updateMany({ key: { $in: enabledKeys } }, { $addToSet: { targetOrganizationIds: orgId }, $pull: { excludedOrganizationIds: orgId } });
+            }
+            if (disabledKeys.length > 0) {
+                await FeatureFlag.updateMany({ key: { $in: disabledKeys } }, { $pull: { targetOrganizationIds: orgId }, $addToSet: { excludedOrganizationIds: orgId } });
+            }
+        }
         // 5. Create Owner User
         const newUser = new User({
             _id: userId,
@@ -193,7 +232,7 @@ export async function authRoutes(app) {
             organizationId: orgId,
             tokenVersion: 1,
             deviceInfo: request.headers["user-agent"],
-            ipAddress: request.ip,
+            ipAddress: getClientIp(request),
             expiresAt: sessionExpiresAt,
             isValid: true,
             lastActivityAt: new Date(),
@@ -287,7 +326,7 @@ export async function authRoutes(app) {
     });
     // POST /api/v1/auth/logout
     app.post("/logout", {
-        onRequest: [authenticate],
+        onRequest: [optionalAuthenticate],
     }, controller.logout);
     const forgotPasswordSchema = z.object({
         email: z.string().email("Invalid email address"),
@@ -375,7 +414,7 @@ export async function authRoutes(app) {
             organizationId: user.organizationId,
             tokenVersion: 1,
             deviceInfo: request.headers["user-agent"],
-            ipAddress: request.ip,
+            ipAddress: getClientIp(request),
             expiresAt: sessionExpiresAt,
             isValid: true,
             lastActivityAt: new Date(),
@@ -417,6 +456,24 @@ export async function authRoutes(app) {
                     organizationId: user.organizationId,
                 },
             },
+        });
+    });
+    // POST /api/v1/auth/change-password
+    app.post("/change-password", {
+        preHandler: [authenticate],
+        schema: {
+            body: z.object({
+                currentPassword: z.string().optional(),
+                newPassword: z.string().min(8, "Password must be at least 8 characters"),
+            }),
+        },
+    }, async (request, reply) => {
+        const user = request.user;
+        const { currentPassword, newPassword } = request.body;
+        const result = await authService.changePassword(user.userId, currentPassword, newPassword);
+        return reply.status(200).send({
+            success: true,
+            message: result.message,
         });
     });
     if (process.env.NODE_ENV !== "production") {
