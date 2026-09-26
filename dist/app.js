@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import loggerConfig from "./config/logger.config.js";
-import { storageConfig } from "./config/index.js";
+import { appConfig, storageConfig } from "./config/index.js";
 import mongoose from "mongoose";
 import registerHelmet from "./plugins/helmet.js";
 import registerCors from "./plugins/cors.js";
@@ -56,6 +56,7 @@ export async function buildApp() {
         logger: loggerConfig,
         disableRequestLogging: true, // Custom request/response lifecycle logging in logging.middleware.ts
         bodyLimit: 50 * 1024 * 1024, // 50MB body limit for bulk operations
+        trustProxy: appConfig.trustProxy ?? true,
     });
     // Register foundational plugins
     await registerHelmet(app);

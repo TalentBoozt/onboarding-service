@@ -43,6 +43,8 @@ const AuditLogSchema = new Schema({
             "logout",
             "export",
             "status_change",
+            "error",
+            "execute",
         ],
         required: true,
     },

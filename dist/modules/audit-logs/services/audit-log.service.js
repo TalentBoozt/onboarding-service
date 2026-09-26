@@ -6,13 +6,19 @@ export class AuditLogService {
     }
     async logEvent(data) {
         const auditLogData = {
-            organizationId: new mongoose.Types.ObjectId(data.organizationId),
-            actorUserId: data.actorUserId ? new mongoose.Types.ObjectId(data.actorUserId) : undefined,
+            organizationId: data.organizationId && mongoose.Types.ObjectId.isValid(data.organizationId.toString())
+                ? new mongoose.Types.ObjectId(data.organizationId.toString())
+                : undefined,
+            actorUserId: data.actorUserId && mongoose.Types.ObjectId.isValid(data.actorUserId.toString())
+                ? new mongoose.Types.ObjectId(data.actorUserId.toString())
+                : undefined,
             actorType: data.actorType || "user",
             eventCategory: data.eventCategory,
             eventType: data.eventType,
             resourceType: data.resourceType,
-            resourceId: data.resourceId ? new mongoose.Types.ObjectId(data.resourceId) : undefined,
+            resourceId: data.resourceId && mongoose.Types.ObjectId.isValid(data.resourceId.toString())
+                ? new mongoose.Types.ObjectId(data.resourceId.toString())
+                : undefined,
             action: data.action,
             description: data.description,
             metadata: data.metadata,

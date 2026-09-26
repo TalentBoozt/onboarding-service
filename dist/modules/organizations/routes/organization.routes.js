@@ -11,6 +11,8 @@ export async function organizationRoutes(app) {
     app.addHook("preHandler", authenticate);
     // GET /api/v1/organizations/current
     app.get("/current", controller.getCurrent);
+    // GET /api/v1/organizations/current/usage
+    app.get("/current/usage", controller.getUsage);
     // PATCH /api/v1/organizations/current
     app.patch("/current", {
         preHandler: [requireRole(["owner"])],

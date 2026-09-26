@@ -2,6 +2,8 @@ import AppError from "../../../common/errors/app-error.js";
 import { appConfig } from "../../../config/index.js";
 import EmailService from "../../../shared/email/email.service.js";
 import PlatformSetting from "../../super-admin/models/platform-setting.model.js";
+import { getClientIp } from "../../../common/utils/ip.util.js";
+import { FeatureFlagService } from "../../super-admin/services/feature-flag.service.js";
 export class AuthController {
     authService;
     constructor(authService) {
@@ -9,13 +11,22 @@ export class AuthController {
     }
     login = async (request, reply) => {
         const { email, password } = request.body;
-        const ipAddress = request.ip;
+        const ipAddress = getClientIp(request);
         const deviceInfo = request.headers["user-agent"];
         const result = await this.authService.login(email, password, ipAddress, deviceInfo);
         // Platform Maintenance Mode check: block non-super-admins
         const platformSetting = await PlatformSetting.findOne({ singleton: true });
         if (platformSetting?.maintenanceMode && result.user.role !== "super_admin") {
             throw new AppError(503, "MAINTENANCE_MODE", platformSetting.maintenanceMessage || "Talnova Onboarding is undergoing planned infrastructure maintenance.");
+        }
+        let features = {};
+        if (result.user.organizationId) {
+            try {
+                features = await FeatureFlagService.getAllResolvedFlags(result.user.organizationId.toString(), result.user.role);
+            }
+            catch {
+                // non-fatal
+            }
         }
         // Set refresh token cookie
         reply.setCookie("refreshToken", result.refreshToken, {
@@ -31,6 +42,7 @@ export class AuthController {
             data: {
                 accessToken: result.accessToken,
                 user: result.user,
+                features,
             },
         });
     };
@@ -66,10 +78,22 @@ export class AuthController {
         }
     };
     logout = async (request, reply) => {
-        // If authenticated, invalidate session using the request.user payload
+        // If authenticated, invalidate session using the request.user payload or extract from refreshToken cookie
         const user = request.user;
-        if (user?.sessionId) {
-            await this.authService.logout(user.sessionId);
+        let sessionId = user?.sessionId;
+        if (!sessionId && request.cookies?.refreshToken) {
+            try {
+                const decoded = request.server.jwt?.decode?.(request.cookies.refreshToken);
+                if (decoded?.sessionId) {
+                    sessionId = decoded.sessionId;
+                }
+            }
+            catch {
+                // non-fatal
+            }
+        }
+        if (sessionId) {
+            await this.authService.logout(sessionId);
         }
         // Always clear the cookie
         reply.clearCookie("refreshToken", {

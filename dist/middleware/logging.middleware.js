@@ -1,4 +1,5 @@
 import TelemetryBuffer from "../infrastructure/telemetry/telemetry-buffer.js";
+import { getClientIp } from "../common/utils/ip.util.js";
 export function registerLogging(app) {
     app.addHook("onRequest", async (request) => {
         request.startTime = process.hrtime();
@@ -6,7 +7,7 @@ export function registerLogging(app) {
             reqId: request.id,
             method: request.method,
             url: request.url,
-            ip: request.ip,
+            ip: getClientIp(request),
             userAgent: request.headers["user-agent"],
         }, `📥 Incoming Request: ${request.method} ${request.url}`);
     });

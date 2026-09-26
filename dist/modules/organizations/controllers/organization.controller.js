@@ -12,6 +12,15 @@ export class OrganizationController {
             data: org,
         });
     };
+    getUsage = async (request, reply) => {
+        const user = request.user;
+        const usage = await this.orgService.getOrganizationUsage(user.organizationId);
+        return reply.status(200).send({
+            success: true,
+            message: "Organization usage and limits retrieved successfully",
+            data: usage,
+        });
+    };
     updateCurrent = async (request, reply) => {
         const user = request.user;
         const org = await this.orgService.updateOrganization(user.organizationId, request.body);

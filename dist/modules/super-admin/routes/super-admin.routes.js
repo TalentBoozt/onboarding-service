@@ -21,6 +21,11 @@ export async function superAdminRoutes(app) {
     app.get("/organizations/:id/360", controller.getOrganization360);
     app.post("/organizations/:id/quarantine", controller.quarantineOrganization);
     app.post("/organizations/:id/activate", controller.activateOrganization);
+    app.delete("/organizations/:id", controller.deleteOrganization);
+    app.post("/organizations/:id/restore", controller.restoreOrganization);
+    app.get("/organizations/:id/flags", controller.getOrganizationFlags);
+    app.patch("/organizations/:id/flags/:key", controller.updateOrganizationFlag);
+    app.post("/organizations/:id/flags/batch", controller.batchUpdateOrganizationFlags);
     // 3. Users & Sessions
     app.get("/users", controller.getUsers);
     app.get("/users/:id/360", controller.getUser360);
@@ -30,6 +35,7 @@ export async function superAdminRoutes(app) {
     app.post("/sessions/:sessionId/revoke", controller.revokeSession);
     // 4. Invoices & Finance
     app.get("/invoices", controller.getInvoices);
+    app.get("/invoices/preview/:orgId", controller.getPackageInvoicePreview);
     app.get("/invoices/:id", controller.getInvoiceById);
     app.post("/invoices", controller.createInvoice);
     app.get("/invoices/export", controller.exportInvoices);
@@ -50,6 +56,15 @@ export async function superAdminRoutes(app) {
     app.get("/observability/ai", controller.getAiObservability);
     app.get("/ai/usage", controller.getAiUsage);
     app.get("/observability/storage", controller.getStorageObservability);
+    app.patch("/organizations/:id/storage-limit", controller.updateOrganizationStorageLimit);
+    app.post("/organizations/:id/assign-package", controller.assignOrganizationPackage);
+    // 5.1 Packages, Plans & Modular Entitlements
+    app.get("/packages", controller.getPackages);
+    app.post("/packages", controller.createPackage);
+    app.get("/packages/:id", controller.getPackageById);
+    app.patch("/packages/:id", controller.updatePackage);
+    app.delete("/packages/:id", controller.deletePackage);
+    app.post("/packages/:id/clone", controller.clonePackage);
     // 6. Settings, Flags, Alerts & Reports
     app.get("/settings/flags", controller.getFlags);
     app.post("/settings/flags", controller.createFlag);

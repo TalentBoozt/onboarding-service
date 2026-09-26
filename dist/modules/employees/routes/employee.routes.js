@@ -1,7 +1,7 @@
 import { EmployeeController } from "../controllers/employee.controller.js";
 import { EmployeeService } from "../services/employee.service.js";
 import { EmployeeRepository } from "../repositories/employee.repository.js";
-import { authenticate, requireRole } from "../../../middleware/auth.middleware.js";
+import { authenticate, requireRole, requireFeatureFlag } from "../../../middleware/auth.middleware.js";
 import { updateProfileSchema, updatePreferencesSchema, changePasswordSchema, inviteEmployeeSchema, updateEmployeeSchema, importEmployeesSchema, validateBulkImportSchema, } from "../schemas/employee.schema.js";
 export async function employeeRoutes(app) {
     const repository = new EmployeeRepository();
@@ -16,20 +16,20 @@ export async function employeeRoutes(app) {
     app.patch("/me/preferences", { schema: { body: updatePreferencesSchema } }, controller.updatePreferences);
     app.patch("/me/password", { schema: { body: changePasswordSchema } }, controller.changePassword);
     // Directory & Administration Routes
-    app.get("/", { preHandler: [requireRole(["owner", "admin", "hr_admin", "manager", "it_admin"])] }, controller.listEmployees);
+    app.get("/", { preHandler: [requireRole(["owner", "admin", "hr_admin", "manager", "it_admin"]), requireFeatureFlag("employee_directory")] }, controller.listEmployees);
     app.post("/invite", {
-        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"]), requireFeatureFlag("employee_invite")],
         schema: { body: inviteEmployeeSchema },
     }, controller.inviteEmployee);
     app.post("/bulk/validate", {
-        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"]), requireFeatureFlag("bulk_csv_import")],
         schema: { body: validateBulkImportSchema },
     }, controller.validateBulkImport);
     app.post("/import", {
-        preHandler: [requireRole(["owner", "admin", "hr_admin"])],
+        preHandler: [requireRole(["owner", "admin", "hr_admin"]), requireFeatureFlag("bulk_csv_import")],
         schema: { body: importEmployeesSchema },
     }, controller.importEmployees);
-    app.get("/:id", { preHandler: [requireRole(["owner", "admin", "hr_admin", "manager"])] }, controller.getEmployee);
+    app.get("/:id", { preHandler: [requireRole(["owner", "admin", "hr_admin", "manager"]), requireFeatureFlag("employee_directory")] }, controller.getEmployee);
     app.patch("/:id", {
         preHandler: [requireRole(["owner", "admin", "hr_admin"])],
         schema: { body: updateEmployeeSchema },

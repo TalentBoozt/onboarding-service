@@ -1,4 +1,5 @@
 import { SSOService } from "../services/sso.service.js";
+import { getClientIp } from "../../../common/utils/ip.util.js";
 export class SSOController {
     ssoService;
     constructor(ssoService) {
@@ -73,7 +74,7 @@ export class SSOController {
             authProvider: body.authProvider || body.provider,
             ssoId: body.ssoId || `sso_${Date.now()}`,
             idpGroups: body.idpGroups || [],
-        }, request.ip, request.headers["user-agent"]);
+        }, getClientIp(request), request.headers["user-agent"]);
         return reply.status(200).send({
             success: true,
             message: "SSO authentication successful",

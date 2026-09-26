@@ -120,6 +120,27 @@ export class SuperAdminController {
             data,
         });
     };
+    deleteOrganization = async (request, reply) => {
+        const { id } = request.params;
+        const { mode } = request.query || request.body || {};
+        const actorUserId = request.user?.userId;
+        const data = await this.superAdminService.deleteOrganization(id, mode === "soft" ? "soft" : "hard", actorUserId);
+        return reply.status(200).send({
+            success: true,
+            message: data.message,
+            data,
+        });
+    };
+    restoreOrganization = async (request, reply) => {
+        const { id } = request.params;
+        const actorUserId = request.user?.userId;
+        const data = await this.superAdminService.restoreOrganization(id, actorUserId);
+        return reply.status(200).send({
+            success: true,
+            message: data.message,
+            data,
+        });
+    };
     // ---------------------------------------------------------------------------
     // 3. Users & Sessions
     // ---------------------------------------------------------------------------
@@ -193,6 +214,15 @@ export class SuperAdminController {
         return reply.status(200).send({
             success: true,
             message: "Invoice retrieved successfully",
+            data,
+        });
+    };
+    getPackageInvoicePreview = async (request, reply) => {
+        const { orgId } = request.params;
+        const data = await this.superAdminService.generatePackageInvoicePreview(orgId);
+        return reply.status(200).send({
+            success: true,
+            message: "Package invoice preview generated successfully",
             data,
         });
     };
@@ -308,8 +338,8 @@ export class SuperAdminController {
             data,
         });
     };
-    getApiObservability = async (_request, reply) => {
-        const data = this.superAdminService.getApiObservability();
+    getApiObservability = async (request, reply) => {
+        const data = this.superAdminService.getApiObservability(request.query);
         return reply.status(200).send({
             success: true,
             message: "API telemetry metrics retrieved",
@@ -324,8 +354,8 @@ export class SuperAdminController {
             data,
         });
     };
-    getAiObservability = async (_request, reply) => {
-        const data = await this.superAdminService.getAiObservability();
+    getAiObservability = async (request, reply) => {
+        const data = await this.superAdminService.getAiObservability(request.query);
         return reply.status(200).send({
             success: true,
             message: "AI telemetry retrieved",
@@ -349,11 +379,90 @@ export class SuperAdminController {
             totalPages: result.totalPages,
         });
     };
-    getStorageObservability = async (_request, reply) => {
-        const data = await this.superAdminService.getStorageObservability();
+    getStorageObservability = async (request, reply) => {
+        const data = await this.superAdminService.getStorageObservability(request.query);
         return reply.status(200).send({
             success: true,
             message: "Storage telemetry retrieved",
+            data,
+        });
+    };
+    updateOrganizationStorageLimit = async (request, reply) => {
+        const { id } = request.params;
+        const { maxStorageGb } = request.body || {};
+        const data = await this.superAdminService.updateOrganizationStorageLimit(id, maxStorageGb);
+        return reply.status(200).send({
+            success: true,
+            message: "Organization storage limit updated successfully",
+            data,
+        });
+    };
+    // ---------------------------------------------------------------------------
+    // 5.1 Packages, Plans & Modular Entitlements
+    // ---------------------------------------------------------------------------
+    getPackages = async (request, reply) => {
+        const data = await this.superAdminService.getPackages(request.query);
+        return reply.status(200).send({
+            success: true,
+            message: "Package templates retrieved successfully",
+            data,
+        });
+    };
+    getPackageById = async (request, reply) => {
+        const { id } = request.params;
+        const data = await this.superAdminService.getPackageById(id);
+        return reply.status(200).send({
+            success: true,
+            message: "Package details retrieved successfully",
+            data,
+        });
+    };
+    createPackage = async (request, reply) => {
+        const actorUserId = request.user?.userId;
+        const data = await this.superAdminService.createPackage(request.body, actorUserId);
+        return reply.status(201).send({
+            success: true,
+            message: "Package template created successfully",
+            data,
+        });
+    };
+    updatePackage = async (request, reply) => {
+        const { id } = request.params;
+        const actorUserId = request.user?.userId;
+        const data = await this.superAdminService.updatePackage(id, request.body, actorUserId);
+        return reply.status(200).send({
+            success: true,
+            message: "Package template updated successfully",
+            data,
+        });
+    };
+    deletePackage = async (request, reply) => {
+        const { id } = request.params;
+        const actorUserId = request.user?.userId;
+        const data = await this.superAdminService.deletePackage(id, actorUserId);
+        return reply.status(200).send({
+            success: true,
+            message: data.message,
+            data,
+        });
+    };
+    clonePackage = async (request, reply) => {
+        const { id } = request.params;
+        const actorUserId = request.user?.userId;
+        const data = await this.superAdminService.clonePackage(id, actorUserId);
+        return reply.status(201).send({
+            success: true,
+            message: "Package cloned successfully",
+            data,
+        });
+    };
+    assignOrganizationPackage = async (request, reply) => {
+        const { id } = request.params;
+        const actorUserId = request.user?.userId;
+        const data = await this.superAdminService.assignOrganizationPackage(id, request.body, actorUserId);
+        return reply.status(200).send({
+            success: true,
+            message: "Package successfully assigned to organization",
             data,
         });
     };
@@ -386,6 +495,37 @@ export class SuperAdminController {
         return reply.status(200).send({
             success: true,
             message: `Feature flag ${normalizedKey} updated successfully`,
+            data,
+        });
+    };
+    getOrganizationFlags = async (request, reply) => {
+        const { id } = request.params;
+        const data = await this.superAdminService.getOrganizationFlags(id);
+        return reply.status(200).send({
+            success: true,
+            message: "Organization feature flags retrieved successfully",
+            data,
+        });
+    };
+    updateOrganizationFlag = async (request, reply) => {
+        const { id, key } = request.params;
+        const { override, reason } = request.body || {};
+        const actorUserId = request.user?.userId;
+        const data = await this.superAdminService.updateOrganizationFlagOverride(id, key, override, actorUserId, reason);
+        return reply.status(200).send({
+            success: true,
+            message: `Organization override for '${key}' set to '${override}'`,
+            data,
+        });
+    };
+    batchUpdateOrganizationFlags = async (request, reply) => {
+        const { id } = request.params;
+        const { updates, reason } = request.body || {};
+        const actorUserId = request.user?.userId;
+        const data = await this.superAdminService.batchUpdateOrganizationFlags(id, updates, actorUserId, reason);
+        return reply.status(200).send({
+            success: true,
+            message: "Organization feature flags batch updated successfully",
             data,
         });
     };

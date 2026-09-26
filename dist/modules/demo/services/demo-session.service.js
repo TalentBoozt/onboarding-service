@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import AppError from "../../../common/errors/app-error.js";
 import { demoConfig } from "../../../config/index.js";
 import { getDemoSessionModel, getDemoUserModel, getDemoRiskAlertModel, getDemoActivityLogModel, } from "../models/index.js";
+import { normalizeIp } from "../../../common/utils/ip.util.js";
 export class DemoSessionService {
     /**
      * Validates a session against expiration, validity, and inactivity timeouts.
@@ -28,10 +29,12 @@ export class DemoSessionService {
             await DemoSession.updateOne({ _id: session._id }, { isValid: false, suspiciousReason: `Terminated due to ${demoConfig.inactivityTimeoutMinutes}m of inactivity` });
             throw new AppError(401, "SESSION_IDLE_TIMEOUT", `Session expired due to ${demoConfig.inactivityTimeoutMinutes} minutes of inactivity.`);
         }
+        const normSessionIp = normalizeIp(session.ipAddress);
+        const normCurrentIp = normalizeIp(currentIp);
         // Rapid IP change detection during active session
-        if (currentIp && session.ipAddress && session.ipAddress !== currentIp) {
+        if (normCurrentIp && normSessionIp && normSessionIp !== normCurrentIp) {
             session.riskStatus = "HIGH_RISK";
-            session.suspiciousReason = `Sudden IP shift detected: ${session.ipAddress} -> ${currentIp}`;
+            session.suspiciousReason = `Sudden IP shift detected: ${normSessionIp} -> ${normCurrentIp}`;
             await DemoSession.updateOne({ _id: session._id }, { riskStatus: "HIGH_RISK", suspiciousReason: session.suspiciousReason });
             await DemoRiskAlert.create({
                 demoTenantId: session.demoTenantId,
@@ -40,12 +43,12 @@ export class DemoSessionService {
                 severity: "HIGH",
                 status: "OPEN",
                 signals: [
-                    `Active session IP changed from ${session.ipAddress} to ${currentIp}`,
+                    `Active session IP changed from ${normSessionIp} to ${normCurrentIp}`,
                     `Session ID: ${session.sessionId}`,
                 ],
                 details: {
-                    previousIp: session.ipAddress,
-                    newIp: currentIp,
+                    previousIp: normSessionIp,
+                    newIp: normCurrentIp,
                     timestamp: new Date(),
                 },
             });
@@ -54,7 +57,7 @@ export class DemoSessionService {
                 demoUserId: session.demoUserId,
                 action: "SUSPICIOUS_IP_SHIFT",
                 category: "SECURITY",
-                description: `Rapid IP change detected during session ${session.sessionId}: ${session.ipAddress} -> ${currentIp}`,
+                description: `Rapid IP change detected during session ${session.sessionId}: ${normSessionIp} -> ${normCurrentIp}`,
                 severity: "warning",
             });
         }

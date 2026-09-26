@@ -4,6 +4,13 @@ const InvoiceLineItemSchema = new Schema({
     quantity: { type: Number, required: true, min: 1, default: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
     amount: { type: Number, required: true, min: 0 },
+    itemType: {
+        type: String,
+        enum: ["package_base", "addon", "overage", "custom", "discount"],
+        default: "custom",
+    },
+    featureKey: { type: String, trim: true },
+    packageSlug: { type: String, trim: true, lowercase: true },
 }, { _id: false });
 const round2 = (val) => Math.round((val + Number.EPSILON) * 100) / 100;
 const InvoiceSchema = new Schema({
@@ -25,6 +32,26 @@ const InvoiceSchema = new Schema({
         type: String,
         required: true,
         trim: true,
+    },
+    packageId: {
+        type: Schema.Types.ObjectId,
+        ref: "Package",
+        index: true,
+    },
+    packageSlug: {
+        type: String,
+        trim: true,
+        lowercase: true,
+        index: true,
+    },
+    packageName: {
+        type: String,
+        trim: true,
+    },
+    billingCycle: {
+        type: String,
+        enum: ["monthly", "annually", "quarterly", "custom"],
+        default: "monthly",
     },
     currency: {
         type: String,

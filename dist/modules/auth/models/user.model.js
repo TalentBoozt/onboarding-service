@@ -85,6 +85,7 @@ const UserSchema = new Schema({
         passwordResetToken: { type: String },
         passwordResetExpires: { type: Date },
         supervisorPinHash: { type: String },
+        mustChangePassword: { type: Boolean, default: false },
     },
     compliance: {
         legalHold: { type: Boolean, default: false },

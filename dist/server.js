@@ -10,9 +10,10 @@ async function start() {
     try {
         // 1. Connect to Database
         await connectDatabase(app.log);
-        // 2. Seed Default Platform Feature Flags
+        // 2. Seed Default Platform Feature Flags & Baseline Package Templates
         const superAdminService = new SuperAdminService();
         await superAdminService.syncDefaultFeatureFlags();
+        await superAdminService.syncDefaultPackages();
         // 2.1 Seed Baseline Deterministic Demo Database
         await DemoResetService.ensureSeeded();
         // 3. Register Event Subscribers
