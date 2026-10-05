@@ -2,7 +2,7 @@ import mongoose, { Schema } from "mongoose";
 const UserSchema = new Schema({
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true },
     auth: {
-        email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+        email: { type: String, required: false, lowercase: true, trim: true },
         passwordHash: { type: String, required: true },
         emailVerified: { type: Boolean, default: false },
         authProvider: {
@@ -60,7 +60,7 @@ const UserSchema = new Schema({
     permissions: {
         role: {
             type: String,
-            enum: ["owner", "admin", "manager", "employee", "super_admin", "it_admin", "hr_admin"],
+            enum: ["owner", "admin", "manager", "supervisor", "employee", "super_admin", "it_admin", "hr_admin"],
             default: "employee",
         },
         roles: { type: [String], default: [] },
@@ -80,6 +80,8 @@ const UserSchema = new Schema({
     security: {
         mfaEnabled: { type: Boolean, default: false },
         failedLoginAttempts: { type: Number, default: 0 },
+        failedSupervisorPinAttempts: { type: Number, default: 0 },
+        supervisorPinLockedUntil: { type: Date },
         lockedUntil: { type: Date },
         lastPasswordReset: { type: Date },
         passwordResetToken: { type: String },
@@ -101,9 +103,59 @@ const UserSchema = new Schema({
 }, {
     timestamps: true,
 });
-// Pre-save hook to populate full name and ensure multi-role integrity
+// Pre-save hook to populate full name, ensure multi-role integrity, and guarantee frontline/kiosk identifiers
 UserSchema.pre("validate", function (next) {
-    this.profile.fullName = `${this.profile.firstName} ${this.profile.lastName}`.trim();
+    if (this.profile) {
+        this.profile.fullName = `${this.profile.firstName || ""} ${this.profile.lastName || ""}`.trim();
+    }
+    // Clean empty or whitespace-only auth.email to undefined so partial/sparse indexes stay pristine
+    if (this.auth) {
+        if (this.auth.email && typeof this.auth.email === "string") {
+            this.auth.email = this.auth.email.trim().toLowerCase();
+            if (!this.auth.email) {
+                this.auth.email = undefined;
+            }
+        }
+        else {
+            this.auth.email = undefined;
+        }
+    }
+    // Ensure employment block exists
+    if (!this.employment) {
+        this.employment = {
+            employmentType: "full_time",
+            status: "invited",
+            onboardingState: "active",
+        };
+    }
+    // Clean empty employment.employeeId
+    if (this.employment.employeeId && typeof this.employment.employeeId === "string") {
+        this.employment.employeeId = this.employment.employeeId.trim();
+        if (!this.employment.employeeId) {
+            this.employment.employeeId = undefined;
+        }
+    }
+    // Clean empty profile.phone
+    if (this.profile?.phone && typeof this.profile.phone === "string") {
+        this.profile.phone = this.profile.phone.trim();
+        if (!this.profile.phone) {
+            this.profile.phone = undefined;
+        }
+    }
+    // Real-World Rule: At least one identifier (email, employee ID, or phone number) must be provided
+    const hasEmail = Boolean(this.auth?.email);
+    const hasEmployeeId = Boolean(this.employment?.employeeId);
+    const hasPhone = Boolean(this.profile?.phone);
+    if (!hasEmail && !hasEmployeeId && !hasPhone) {
+        return next(new Error("At least one identifier (email, employee ID, or phone number) must be provided for every employee record."));
+    }
+    // Frontline Kiosk Compatibility Rule:
+    // If a frontline worker is created with only a phone number (no email and no employeeId),
+    // auto-provision an Employee ID so they can immediately sign in at physical Kiosk keypads.
+    if (hasPhone && !hasEmployeeId && !hasEmail) {
+        const randomSuffix = Math.random().toString(36).substring(2, 8).toUpperCase();
+        this.employment.employeeId = `EMP-${randomSuffix}`;
+    }
     if (!this.permissions) {
         this.permissions = { role: "employee", roles: ["employee"], customRoles: [] };
     }
@@ -130,10 +182,17 @@ UserSchema.index({ "employment.status": 1 });
 UserSchema.index({ isDeleted: 1 });
 // Compound Indexes
 UserSchema.index({ organizationId: 1, isDeleted: 1 });
-UserSchema.index({ organizationId: 1, "auth.email": 1 });
+UserSchema.index({ "auth.email": 1 }, { unique: true, partialFilterExpression: { "auth.email": { $type: "string" } } });
+UserSchema.index({ organizationId: 1, "auth.email": 1 }, { partialFilterExpression: { "auth.email": { $type: "string" } } });
+UserSchema.index({ organizationId: 1, "employment.employeeId": 1 }, { unique: true, partialFilterExpression: { "employment.employeeId": { $type: "string" } } });
+UserSchema.index({ organizationId: 1, "profile.phone": 1 }, { partialFilterExpression: { "profile.phone": { $type: "string" } } });
 UserSchema.index({ organizationId: 1, "permissions.role": 1 });
 UserSchema.index({ organizationId: 1, "employment.badgeId": 1 }, { sparse: true });
 UserSchema.index({ organizationId: 1, "employment.nationalId": 1 }, { sparse: true });
+// Single-field indexes for instant sub-10ms kiosk badge, phone, and employee lookups (K-ENT-001)
+UserSchema.index({ "employment.badgeId": 1 }, { sparse: true });
+UserSchema.index({ "employment.employeeId": 1 }, { sparse: true });
+UserSchema.index({ "profile.phone": 1 }, { sparse: true });
 /**
  * CANONICAL PERSISTENCE MODEL:
  * 'User' (MongoDB collection: 'users') is the single authoritative source of truth
@@ -144,6 +203,7 @@ UserSchema.index({ organizationId: 1, "employment.nationalId": 1 }, { sparse: tr
  * embedded within this canonical schema.
  */
 export const User = mongoose.model("User", UserSchema);
-// Architectural alias to prevent regression or duplicate collection creation
+// Architectural aliases to prevent regression or duplicate collection creation
+export const UserModel = User;
 export const EmployeeModel = User;
 export default User;

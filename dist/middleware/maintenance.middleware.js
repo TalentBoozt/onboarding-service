@@ -10,6 +10,7 @@ export async function maintenanceModeGuard(request, reply) {
     if (url.startsWith("/api/v1/super-admin") ||
         url === "/live" ||
         url === "/health" ||
+        url === "/api/v1/health" ||
         url === "/ready" ||
         url.startsWith("/documentation") ||
         url.startsWith("/docs")) {

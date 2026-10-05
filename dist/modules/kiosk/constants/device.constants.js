@@ -1,11 +1,31 @@
 /**
  * Active statuses for registered kiosk terminals.
  */
-export const KIOSK_DEVICE_STATUSES = ["online", "offline", "maintenance", "decommissioned"];
-/**
- * Remote administration commands sent to devices over heartbeats.
- */
-export const KIOSK_COMMAND_TYPES = ["refresh_cache", "restart_app", "clear_storage"];
+export const KIOSK_DEVICE_STATUSES = [
+    "staged",
+    "online",
+    "offline",
+    "maintenance",
+    "suspended",
+    "decommissioned"
+];
+export const KIOSK_COMMAND_TYPES = [
+    "RELOAD_MANIFEST",
+    "ENTER_MAINTENANCE",
+    "EXIT_MAINTENANCE",
+    "CLEAR_CACHE",
+    "FORCE_RESET",
+    "RESTART_APP",
+    "reload_manifest",
+    "enter_maintenance",
+    "exit_maintenance",
+    "clear_cache",
+    "force_reset",
+    "restart_app",
+    "refresh_cache",
+    "clear_storage",
+    "emergency_override"
+];
 /**
  * Frequency of telemetry heartbeat transmission in milliseconds.
  */

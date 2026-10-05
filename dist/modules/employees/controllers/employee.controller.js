@@ -102,9 +102,10 @@ export class EmployeeController {
         const user = request.user;
         const body = request.body;
         const employee = await this.employeeService.inviteEmployee(user.organizationId, body, user.userId);
+        const message = employee.auth?.email ? "Employee invited successfully" : "Employee account created successfully";
         return reply.status(201).send({
             success: true,
-            message: "Employee invited successfully",
+            message,
             data: employee,
         });
     };

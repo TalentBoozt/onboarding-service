@@ -511,9 +511,9 @@ export function registerEventSubscribers() {
     });
     // Pre-Boarding IT Hardware Provisioning Trigger (Prompt 08 Step 2.1)
     const handlePreboardingHardwareTrigger = async (event) => {
-        const employeeId = event.payload?.employeeId || event.actorId || event.entityId;
+        const employeeId = event.payload?.userId || (mongoose.Types.ObjectId.isValid(event.payload?.employeeId) ? event.payload?.employeeId : undefined) || event.actorId || event.entityId;
         const organizationId = event.organizationId;
-        if (!employeeId || !organizationId)
+        if (!employeeId || !organizationId || !mongoose.Types.ObjectId.isValid(employeeId))
             return;
         try {
             const user = await User.findOne({

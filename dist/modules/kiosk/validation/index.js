@@ -3,9 +3,14 @@ export * from "./block.schema.js";
 export * from "./step.schema.js";
 export * from "./journey.schema.js";
 export * from "./device.schema.js";
+export * from "./assignment.schema.js";
+export * from "./session.schema.js";
 export * from "./analytics.schema.js";
 export * from "./player.schema.js";
 export * from "./builder.schema.js";
+export * from "./journey-publish.validator.js";
+export * from "./emergency.schema.js";
+export * from "./webhook.schema.js";
 /**
  * Validates data against a schema and throws a structured ZodError if invalid.
  */

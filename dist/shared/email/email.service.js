@@ -126,7 +126,7 @@ export class EmailService {
     `;
         return this.sendEmail(to, subject, html);
     }
-    async sendBulkEmployeeWelcomeEmail(to, token, orgName, tempPassword = "Welcome@2026!", employeeName) {
+    async sendBulkEmployeeWelcomeEmail(to, token, orgName, tempPassword = "Password@123!", employeeName) {
         EmailService.sentEmails.push({ to, token });
         const inviteUrl = `http://localhost:5173/register?token=${token}`;
         const loginUrl = `http://localhost:5173/login`;

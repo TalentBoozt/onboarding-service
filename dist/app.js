@@ -10,6 +10,7 @@ import registerRateLimit from "./plugins/rate-limit.js";
 import registerMultipart from "./plugins/multipart.js";
 import registerJwt from "./plugins/jwt.js";
 import registerSwagger from "./plugins/swagger.js";
+import registerKioskSentinel from "./plugins/kiosk-sentinel.plugin.js";
 import registerRequestId from "./middleware/request-id.middleware.js";
 import registerLogging from "./middleware/logging.middleware.js";
 import maintenanceModeGuard from "./middleware/maintenance.middleware.js";
@@ -36,6 +37,7 @@ import { documentRoutes } from "./modules/documents/routes/document.routes.js";
 import { milestoneRoutes } from "./modules/milestones/routes/milestone.routes.js";
 import { ssoRoutes } from "./modules/auth/routes/sso.routes.js";
 import { hrisIntegrationRoutes } from "./modules/integrations/routes/hris-integration.routes.js";
+import { scimRoutes } from "./modules/integrations/routes/scim.routes.js";
 import { organizationIntegrationRoutes } from "./modules/integrations/routes/organization-integration.routes.js";
 import { officeLocationRoutes } from "./modules/locations/routes/office-location.routes.js";
 import { buddyRoutes } from "./modules/buddy/routes/buddy.routes.js";
@@ -58,6 +60,20 @@ export async function buildApp() {
         bodyLimit: 50 * 1024 * 1024, // 50MB body limit for bulk operations
         trustProxy: appConfig.trustProxy ?? true,
     });
+    // Support SCIM 2.0 media type (RFC 7644)
+    app.addContentTypeParser("application/scim+json", { parseAs: "string" }, (_req, body, done) => {
+        try {
+            if (!body || body.trim() === "") {
+                return done(null, {});
+            }
+            const json = JSON.parse(body);
+            done(null, json);
+        }
+        catch (err) {
+            err.statusCode = 400;
+            done(err, undefined);
+        }
+    });
     // Register foundational plugins
     await registerHelmet(app);
     await registerCors(app);
@@ -67,6 +83,7 @@ export async function buildApp() {
     await registerMultipart(app);
     await registerJwt(app);
     await registerSwagger(app);
+    await registerKioskSentinel(app);
     // Set custom Zod validation compiler
     setupZodValidation(app);
     // Register global middleware hooks
@@ -79,6 +96,9 @@ export async function buildApp() {
     await app.register(authRoutes, { prefix: "/api/v1/auth" });
     await app.register(ssoRoutes, { prefix: "/api/v1/auth/sso" });
     await app.register(hrisIntegrationRoutes, { prefix: "/api/v1/integrations" });
+    await app.register(scimRoutes, { prefix: "/api/v1/scim/v2" });
+    await app.register(scimRoutes, { prefix: "/api/v1/integrations/scim/v2" });
+    await app.register(scimRoutes, { prefix: "/api/v1/integrations/scim" });
     await app.register(organizationIntegrationRoutes, { prefix: "/api/v1/organizations/integrations" });
     await app.register(officeLocationRoutes, { prefix: "/api/v1/locations" });
     await app.register(organizationRoutes, { prefix: "/api/v1/organizations" });
@@ -107,6 +127,7 @@ export async function buildApp() {
     await app.register(gamificationRoutes, { prefix: "/api/v1/gamification" });
     await app.register(aiAssistantRoutes, { prefix: "/api/v1/ai" });
     await app.register(certificateRoutes, { prefix: "/api/v1/certificates" });
+    await app.register(certificateRoutes, { prefix: "/api/v1/public/certificates" });
     await app.register(onboardingRoutes, { prefix: "/api/v1/onboarding" });
     await app.register(demoRoutes, { prefix: "/api/v1/demo" });
     await app.register(demoSuperAdminRoutes, { prefix: "/api/v1/super-admin/demo" });
@@ -131,13 +152,15 @@ export async function buildApp() {
             },
         });
     });
-    app.get("/health", async (request, reply) => {
+    const healthHandler = async (request, reply) => {
         const dbConnected = mongoose.connection.readyState === 1;
         if (!dbConnected) {
             return reply.status(503).send({ status: "unhealthy", database: "disconnected" });
         }
-        return { status: "healthy", database: "connected" };
-    });
+        return { status: "healthy", database: "connected", timestamp: new Date().toISOString() };
+    };
+    app.get("/health", healthHandler);
+    app.get("/api/v1/health", healthHandler);
     return app;
 }
 export default buildApp;

@@ -1,3 +1,4 @@
+import EmployeeRepository from "../repositories/employee.repository.js";
 import AppError from "../../../common/errors/app-error.js";
 import { hashPassword, verifyPassword } from "../../../utils/crypto.js";
 import mongoose from "mongoose";
@@ -12,7 +13,7 @@ import OrganizationIntegrationService from "../../integrations/services/organiza
 export class EmployeeService {
     employeeRepository;
     integrationService = new OrganizationIntegrationService();
-    constructor(employeeRepository) {
+    constructor(employeeRepository = new EmployeeRepository()) {
         this.employeeRepository = employeeRepository;
     }
     async getProfile(userId) {
@@ -80,15 +81,46 @@ export class EmployeeService {
         return employee;
     }
     async inviteEmployee(orgId, invitationData, invitedBy) {
-        const email = invitationData.email.toLowerCase();
-        // Verify client email configuration before proceeding with invitation
-        const activeEmail = await this.integrationService.getActiveEmailClient(orgId);
-        const existing = await this.employeeRepository.findById(invitedBy); // check inviter
-        const existingEmail = await User.findOne({ "auth.email": email, isDeleted: false });
-        if (existingEmail) {
-            throw new AppError(409, "CONFLICT", "A user with this email address already exists.");
+        const email = invitationData.email ? invitationData.email.toLowerCase().trim() : undefined;
+        const employeeId = invitationData.employeeId ? invitationData.employeeId.trim() : undefined;
+        const phone = invitationData.phone ? invitationData.phone.trim() : undefined;
+        const badgeId = invitationData.badgeId ? invitationData.badgeId.trim() : undefined;
+        if (!email) {
+            throw new AppError(400, "BAD_REQUEST", "Email address is required to send an employee invitation.");
         }
-        // Fetch organization info to verify existence and check seat quota
+        // 1. Uniqueness checks per identifier
+        if (email) {
+            const existingEmail = await User.findOne({ "auth.email": email, isDeleted: false });
+            if (existingEmail) {
+                throw new AppError(409, "CONFLICT", "A user with this email address already exists.");
+            }
+        }
+        if (employeeId) {
+            const existingEmpId = await User.findOne({
+                organizationId: new mongoose.Types.ObjectId(orgId),
+                "employment.employeeId": employeeId,
+                isDeleted: false,
+            });
+            if (existingEmpId) {
+                throw new AppError(409, "CONFLICT", "A user with this employee ID already exists in this organization.");
+            }
+        }
+        if (phone) {
+            const existingPhone = await User.findOne({
+                organizationId: new mongoose.Types.ObjectId(orgId),
+                "profile.phone": phone,
+                isDeleted: false,
+            });
+            if (existingPhone) {
+                throw new AppError(409, "CONFLICT", "A user with this phone number already exists in this organization.");
+            }
+        }
+        // 2. Verify email client configuration ONLY if email delivery is required
+        let activeEmail = null;
+        if (email) {
+            activeEmail = await this.integrationService.getActiveEmailClient(orgId);
+        }
+        // 3. Fetch organization info to verify existence and check seat quota
         const org = await Organization.findById(orgId);
         if (!org) {
             throw new AppError(404, "NOT_FOUND", "Organization not found");
@@ -101,16 +133,17 @@ export class EmployeeService {
         if (currentUserCount >= maxUsers) {
             throw new AppError(403, "SEAT_LIMIT_REACHED", `Organization user seat limit reached (${currentUserCount}/${maxUsers}). Please upgrade your plan to invite more members.`);
         }
-        // Set temporary password hash (must be updated during invitation accept flow)
-        const tempPasswordHash = await hashPassword(Math.random().toString(36).slice(-10) + "Temp123!");
-        // Generate random invitation token and hash it
-        const rawToken = crypto.randomBytes(32).toString("hex");
-        const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
-        const expires = new Date(Date.now() + 24 * 3600000); // 24 hours expiry
+        // 4. Password and Invitation Tokens
+        // For email invitations: generate temporary password and invite token to complete registration
+        // For non-email workers (e.g. ground workers, kiosk users): use initialPassword if provided or generate an initial temporary password
+        const rawTempPassword = invitationData.initialPassword || (Math.random().toString(36).slice(-8) + "Temp1!");
+        const tempPasswordHash = await hashPassword(rawTempPassword);
+        const rawToken = email ? crypto.randomBytes(32).toString("hex") : undefined;
+        const hashedToken = rawToken ? crypto.createHash("sha256").update(rawToken).digest("hex") : undefined;
+        const expires = rawToken ? new Date(Date.now() + 24 * 3600000) : undefined; // 24 hours expiry
         const employeeObj = {
             organizationId: new mongoose.Types.ObjectId(orgId),
             auth: {
-                email,
                 passwordHash: tempPasswordHash,
                 emailVerified: false,
             },
@@ -118,8 +151,11 @@ export class EmployeeService {
                 firstName: invitationData.firstName,
                 lastName: invitationData.lastName,
                 fullName: `${invitationData.firstName} ${invitationData.lastName}`.trim(),
+                phone: phone,
             },
             employment: {
+                employeeId: employeeId, // if undefined, UserSchema.pre('validate') will auto-generate EMP-XXXXXX!
+                badgeId: badgeId,
                 department: invitationData.department || (!mongoose.Types.ObjectId.isValid(invitationData.departmentId || "") ? invitationData.departmentId : undefined),
                 departmentId: invitationData.departmentId && mongoose.Types.ObjectId.isValid(invitationData.departmentId) ? new mongoose.Types.ObjectId(invitationData.departmentId) : undefined,
                 teamId: invitationData.teamId && mongoose.Types.ObjectId.isValid(invitationData.teamId) ? new mongoose.Types.ObjectId(invitationData.teamId) : undefined,
@@ -129,7 +165,7 @@ export class EmployeeService {
                 managerId: invitationData.managerId && mongoose.Types.ObjectId.isValid(invitationData.managerId) ? new mongoose.Types.ObjectId(invitationData.managerId) : undefined,
                 employmentType: invitationData.employmentType || "full_time",
                 hireDate: invitationData.hireDate ? new Date(invitationData.hireDate) : new Date(),
-                status: "invited",
+                status: email ? "invited" : "active",
             },
             permissions: {
                 role: invitationData.role,
@@ -145,6 +181,9 @@ export class EmployeeService {
             createdBy: new mongoose.Types.ObjectId(invitedBy),
             isDeleted: false,
         };
+        if (email) {
+            employeeObj.auth.email = email;
+        }
         const createdUser = await this.employeeRepository.create(employeeObj);
         // Instantiate OnboardingCase and OutboxEvent for transactional state tracking
         let onboardingCase = null;
@@ -152,7 +191,7 @@ export class EmployeeService {
             const caseResult = await onboardingCaseService.createCase({
                 organizationId: orgId.toString(),
                 employeeId: createdUser._id.toString(),
-                source: "invite",
+                source: email ? "invite" : "manual",
                 idempotencyKey: `user_invite_${createdUser._id}`,
                 createdBy: invitedBy.toString(),
             });
@@ -161,10 +200,11 @@ export class EmployeeService {
         catch (caseErr) {
             console.warn("[EmployeeService] OnboardingCase creation handled:", caseErr?.message);
         }
-        // Fetch organization name to personalize the email
-        const orgName = org?.name || "Talnova Workspace";
-        // Send invitation email using organization email service
-        await activeEmail.service.sendInvitationEmail(activeEmail.config, activeEmail.secrets, email, rawToken, orgName);
+        // Send invitation email using organization email service if email was provided
+        if (email && activeEmail && rawToken) {
+            const orgName = org?.name || "Talnova Workspace";
+            await activeEmail.service.sendInvitationEmail(activeEmail.config, activeEmail.secrets, email, rawToken, orgName);
+        }
         // Publish USER_CREATED event to trigger workflows, auto-enrollment, documents, milestones, buddy, calendar
         await eventBus.publish({
             eventName: "USER_CREATED",
@@ -174,7 +214,9 @@ export class EmployeeService {
             payload: {
                 userId: createdUser._id.toString(),
                 caseId: onboardingCase?._id?.toString(),
-                email: createdUser.auth.email,
+                email: createdUser.auth?.email,
+                employeeId: createdUser.employment?.employeeId,
+                phone: createdUser.profile?.phone,
                 role: createdUser.permissions.role,
                 department: invitationData.departmentId || createdUser.employment?.department,
                 firstName: createdUser.profile.firstName,
@@ -191,15 +233,18 @@ export class EmployeeService {
                 payload: {
                     caseId: onboardingCase._id.toString(),
                     employeeId: createdUser._id.toString(),
-                    source: "invite",
+                    source: email ? "invite" : "manual",
                     userId: createdUser._id.toString(),
-                    email: createdUser.auth.email,
+                    email: createdUser.auth?.email,
                     role: createdUser.permissions.role,
                     department: invitationData.departmentId || createdUser.employment?.department,
                 },
             });
         }
-        return createdUser;
+        const result = createdUser.toObject ? createdUser.toObject() : { ...createdUser };
+        result.temporaryPassword = rawTempPassword;
+        result.employeeId = createdUser.employment?.employeeId;
+        return result;
     }
     async updateEmployee(employeeId, orgId, updateData) {
         const employee = await this.employeeRepository.findByIdAndOrg(employeeId, orgId);
@@ -219,6 +264,12 @@ export class EmployeeService {
             updateObj["profile.firstName"] = updateData.firstName;
         if (updateData.lastName !== undefined)
             updateObj["profile.lastName"] = updateData.lastName;
+        if (updateData.phone !== undefined)
+            updateObj["profile.phone"] = updateData.phone;
+        if (updateData.employeeId !== undefined)
+            updateObj["employment.employeeId"] = updateData.employeeId;
+        if (updateData.badgeId !== undefined)
+            updateObj["employment.badgeId"] = updateData.badgeId;
         if (updateData.departmentId !== undefined) {
             updateObj["employment.departmentId"] = updateData.departmentId ? new mongoose.Types.ObjectId(updateData.departmentId) : null;
         }
@@ -329,72 +380,151 @@ export class EmployeeService {
         // 1. Pre-index existing organization departments
         const orgDeptNames = new Set((org.departments || []).map((d) => d.name.toLowerCase()));
         const orgDeptIds = new Set((org.departments || []).map((d) => d._id.toString()));
-        // 2. Pre-fetch existing emails in organization for O(1) duplicate checks
+        // 2. Pre-fetch existing users in organization by email, employeeId, and phone for O(1) duplicate checks
         const targetEmails = usersData
             .map((u) => u.email?.toLowerCase().trim())
             .filter(Boolean);
-        const existingUsers = await User.find({ "auth.email": { $in: targetEmails }, organizationId: orgId, isDeleted: false }, { "auth.email": 1, "profile.fullName": 1, "profile.firstName": 1, "profile.lastName": 1, "permissions.role": 1, "employment.department": 1 });
-        const existingUserMap = new Map();
-        existingUsers.forEach((u) => existingUserMap.set(u.auth.email.toLowerCase(), u));
+        const targetEmpIds = usersData
+            .map((u) => (u.employeeId ? String(u.employeeId).trim() : ""))
+            .filter(Boolean);
+        const targetPhones = usersData
+            .map((u) => (u.phone ? String(u.phone).trim() : ""))
+            .filter(Boolean);
+        const lookupOr = [];
+        if (targetEmails.length > 0)
+            lookupOr.push({ "auth.email": { $in: targetEmails } });
+        if (targetEmpIds.length > 0)
+            lookupOr.push({ "employment.employeeId": { $in: targetEmpIds } });
+        if (targetPhones.length > 0)
+            lookupOr.push({ "profile.phone": { $in: targetPhones } });
+        const existingUsers = lookupOr.length > 0
+            ? await User.find({ organizationId: orgId, isDeleted: false, $or: lookupOr }, {
+                "auth.email": 1,
+                "employment.employeeId": 1,
+                "profile.phone": 1,
+                "profile.fullName": 1,
+                "profile.firstName": 1,
+                "profile.lastName": 1,
+                "permissions.role": 1,
+                "employment.department": 1,
+            })
+            : [];
+        const existingEmailMap = new Map();
+        const existingEmpIdMap = new Map();
+        const existingPhoneMap = new Map();
+        existingUsers.forEach((u) => {
+            if (u.auth?.email)
+                existingEmailMap.set(u.auth.email.toLowerCase(), u);
+            if (u.employment?.employeeId)
+                existingEmpIdMap.set(u.employment.employeeId, u);
+            if (u.profile?.phone)
+                existingPhoneMap.set(u.profile.phone, u);
+        });
         // 3. Pre-fetch candidate managers
         const candidateManagerEmails = usersData
             .map((u) => u.managerEmail?.toLowerCase().trim())
             .filter(Boolean);
         const candidateManagerEmpIds = usersData
-            .map((u) => u.managerEmployeeId?.trim())
+            .map((u) => (u.managerEmployeeId ? String(u.managerEmployeeId).trim() : ""))
             .filter(Boolean);
-        const existingManagers = await User.find({
-            organizationId: orgId,
-            isDeleted: false,
-            $or: [
-                { "auth.email": { $in: candidateManagerEmails } },
-                { "employment.employeeId": { $in: candidateManagerEmpIds } },
-            ],
-        }, { "auth.email": 1, "employment.employeeId": 1, "profile.fullName": 1 });
-        const existingManagerEmails = new Set(existingManagers.map((m) => m.auth.email.toLowerCase()));
+        const managerLookupOr = [];
+        if (candidateManagerEmails.length > 0)
+            managerLookupOr.push({ "auth.email": { $in: candidateManagerEmails } });
+        if (candidateManagerEmpIds.length > 0)
+            managerLookupOr.push({ "employment.employeeId": { $in: candidateManagerEmpIds } });
+        const existingManagers = managerLookupOr.length > 0
+            ? await User.find({
+                organizationId: orgId,
+                isDeleted: false,
+                $or: managerLookupOr,
+            }, { "auth.email": 1, "employment.employeeId": 1, "profile.fullName": 1 })
+            : [];
+        const existingManagerEmails = new Set(existingManagers.map((m) => m.auth?.email?.toLowerCase()).filter(Boolean));
         const existingManagerEmpIds = new Set(existingManagers.map((m) => m.employment?.employeeId).filter(Boolean));
         const inBatchEmailSet = new Set();
+        const inBatchEmpIdSet = new Set();
+        const inBatchPhoneSet = new Set();
+        const inBatchBadgeSet = new Set();
         let willUpdateCount = 0;
         let willCreateCount = 0;
         usersData.forEach((row, index) => {
             const rowNum = index + 1;
-            const rawEmail = row.email?.trim() || "";
+            const rawEmail = (row.email || "").trim();
             const email = rawEmail.toLowerCase();
-            // Email validation
-            if (!email) {
-                errors.push({ row: rowNum, email: "", field: "email", reason: "Email address is required" });
+            const rawEmpId = row.employeeId ? String(row.employeeId).trim() : "";
+            const rawPhone = row.phone ? String(row.phone).trim() : "";
+            const rowIdentifier = rawEmail || rawEmpId || rawPhone || "";
+            // Tri-Factor Identifier Validation: At least one of email, employeeId, or phone
+            if (!email && !rawEmpId && !rawPhone) {
+                errors.push({
+                    row: rowNum,
+                    email: "",
+                    field: "identifier",
+                    reason: "Row must include at least one identifier (email, employee ID, or phone number)",
+                });
                 return;
             }
-            if (!emailRegex.test(email)) {
-                errors.push({ row: rowNum, email: rawEmail, field: "email", reason: "Invalid email address format" });
-                return;
+            // Email format & duplicate validation (if email provided)
+            if (email) {
+                if (!emailRegex.test(email)) {
+                    errors.push({ row: rowNum, email: rowIdentifier, field: "email", reason: "Invalid email address format" });
+                    return;
+                }
+                if (inBatchEmailSet.has(email)) {
+                    errors.push({ row: rowNum, email: rowIdentifier, field: "email", reason: "Duplicate email in the same import file" });
+                    return;
+                }
+                inBatchEmailSet.add(email);
             }
-            // In-batch duplicate check
-            if (inBatchEmailSet.has(email)) {
-                errors.push({ row: rowNum, email: rawEmail, field: "email", reason: "Duplicate email in the same import file" });
-                return;
+            // Employee ID duplicate check (if provided)
+            if (rawEmpId) {
+                if (inBatchEmpIdSet.has(rawEmpId)) {
+                    errors.push({ row: rowNum, email: rowIdentifier, field: "employeeId", reason: "Duplicate employee ID in the same import file" });
+                    return;
+                }
+                inBatchEmpIdSet.add(rawEmpId);
             }
-            inBatchEmailSet.add(email);
+            // Phone duplicate check (if provided)
+            if (rawPhone) {
+                if (inBatchPhoneSet.has(rawPhone)) {
+                    errors.push({ row: rowNum, email: rowIdentifier, field: "phone", reason: "Duplicate phone number in the same import file" });
+                    return;
+                }
+                inBatchPhoneSet.add(rawPhone);
+            }
             // Name validation
             const hasName = Boolean(row.name?.trim() || row.fullName?.trim() || row.firstName?.trim());
             if (!hasName) {
-                errors.push({ row: rowNum, email: rawEmail, field: "fullName", reason: "Employee full name or first name is required" });
+                errors.push({ row: rowNum, email: rowIdentifier, field: "fullName", reason: "Employee full name or first name is required" });
             }
             // Existing user conflict check
-            if (existingUserMap.has(email)) {
-                const existing = existingUserMap.get(email);
+            let matchedExistingUser = null;
+            let conflictField = "";
+            if (email && existingEmailMap.has(email)) {
+                matchedExistingUser = existingEmailMap.get(email);
+                conflictField = "email address";
+            }
+            else if (rawEmpId && existingEmpIdMap.has(rawEmpId)) {
+                matchedExistingUser = existingEmpIdMap.get(rawEmpId);
+                conflictField = "employee ID";
+            }
+            else if (rawPhone && existingPhoneMap.has(rawPhone)) {
+                matchedExistingUser = existingPhoneMap.get(rawPhone);
+                conflictField = "phone number";
+            }
+            if (matchedExistingUser) {
                 if (options?.updateExisting) {
                     willUpdateCount++;
                 }
                 else {
                     conflicts.push({
                         row: rowNum,
-                        email: rawEmail,
-                        reason: "User already exists in this organization",
+                        email: rowIdentifier,
+                        reason: `User with this ${conflictField} already exists in this organization`,
                         existingUser: {
-                            name: existing?.profile?.fullName || `${existing?.profile?.firstName || ""} ${existing?.profile?.lastName || ""}`.trim() || "User",
-                            role: existing?.permissions?.role || "employee",
-                            department: existing?.employment?.department || "General",
+                            name: matchedExistingUser?.profile?.fullName || `${matchedExistingUser?.profile?.firstName || ""} ${matchedExistingUser?.profile?.lastName || ""}`.trim() || "User",
+                            role: matchedExistingUser?.permissions?.role || "employee",
+                            department: matchedExistingUser?.employment?.department || "General",
                         },
                     });
                 }
@@ -417,22 +547,39 @@ export class EmployeeService {
                 if (!isManagerKnown) {
                     warnings.push({
                         row: rowNum,
-                        email: rawEmail,
+                        email: rowIdentifier,
                         field: "managerEmail",
                         message: `Designated manager email "${row.managerEmail}" is not yet registered in organization`,
                     });
                 }
             }
             else if (row.managerEmployeeId) {
-                const mEmpId = row.managerEmployeeId.trim();
-                const isManagerKnown = existingManagerEmpIds.has(mEmpId);
+                const mEmpId = String(row.managerEmployeeId).trim();
+                const isManagerKnown = existingManagerEmpIds.has(mEmpId) || inBatchEmpIdSet.has(mEmpId);
                 if (!isManagerKnown) {
                     warnings.push({
                         row: rowNum,
-                        email: rawEmail,
+                        email: rowIdentifier,
                         field: "managerEmployeeId",
                         message: `Designated manager employee ID "${row.managerEmployeeId}" not found in organization`,
                     });
+                }
+            }
+            // Frontline Worker Badge ID check (K-ENT-001)
+            if (row.badgeId) {
+                const cleanBadge = String(row.badgeId).trim();
+                if (cleanBadge) {
+                    if (inBatchBadgeSet.has(cleanBadge)) {
+                        errors.push({
+                            row: rowNum,
+                            email: rowIdentifier,
+                            field: "badgeId",
+                            reason: `Duplicate badge ID "${cleanBadge}" within import batch`,
+                        });
+                    }
+                    else {
+                        inBatchBadgeSet.add(cleanBadge);
+                    }
                 }
             }
         });
@@ -490,21 +637,48 @@ export class EmployeeService {
             organizationId: new mongoose.Types.ObjectId(orgId),
             isDeleted: { $ne: true },
         });
-        const defaultPasswordHash = await hashPassword("Welcome@2026!");
+        const defaultPasswordHash = await hashPassword("Password@123!");
         const shouldTriggerWorkflows = options?.triggerWorkflows !== false;
         // Verify active email configuration if invitations are requested
         let activeEmailClient = null;
         if (options?.sendInvites) {
-            activeEmailClient = await this.integrationService.getActiveEmailClient(orgId);
+            activeEmailClient = await this.integrationService.getActiveEmailClient(orgId).catch(() => null);
         }
-        // 1. Pre-fetch existing emails for fast duplicate and upsert checks
+        // 1. Pre-fetch existing users by email, employeeId, and phone for fast duplicate and upsert checks
         const targetEmails = usersData
             .map((u) => u.email?.toLowerCase().trim())
             .filter(Boolean);
-        const existingUsers = await User.find({ "auth.email": { $in: targetEmails }, organizationId: orgId, isDeleted: false });
-        const existingUserMap = new Map();
-        existingUsers.forEach((u) => existingUserMap.set(u.auth.email.toLowerCase(), u));
+        const targetEmpIds = usersData
+            .map((u) => (u.employeeId ? String(u.employeeId).trim() : ""))
+            .filter(Boolean);
+        const targetPhones = usersData
+            .map((u) => (u.phone ? String(u.phone).trim() : ""))
+            .filter(Boolean);
+        const lookupOr = [];
+        if (targetEmails.length > 0)
+            lookupOr.push({ "auth.email": { $in: targetEmails } });
+        if (targetEmpIds.length > 0)
+            lookupOr.push({ "employment.employeeId": { $in: targetEmpIds } });
+        if (targetPhones.length > 0)
+            lookupOr.push({ "profile.phone": { $in: targetPhones } });
+        const existingUsers = lookupOr.length > 0
+            ? await User.find({ organizationId: orgId, isDeleted: false, $or: lookupOr })
+            : [];
+        const existingEmailMap = new Map();
+        const existingEmpIdMap = new Map();
+        const existingPhoneMap = new Map();
+        existingUsers.forEach((u) => {
+            if (u.auth?.email)
+                existingEmailMap.set(u.auth.email.toLowerCase(), u);
+            if (u.employment?.employeeId)
+                existingEmpIdMap.set(u.employment.employeeId, u);
+            if (u.profile?.phone)
+                existingPhoneMap.set(u.profile.phone, u);
+        });
         const inFlightEmailSet = new Set();
+        const inFlightEmpIdSet = new Set();
+        const inFlightPhoneSet = new Set();
+        const inFlightBadgeSet = new Set();
         // 2. Pre-index existing departments
         const deptMap = new Map();
         org.departments.forEach((d) => {
@@ -516,19 +690,25 @@ export class EmployeeService {
             .map((u) => u.managerEmail?.toLowerCase().trim())
             .filter(Boolean);
         const candidateManagerEmpIds = usersData
-            .map((u) => u.managerEmployeeId?.trim())
+            .map((u) => (u.managerEmployeeId ? String(u.managerEmployeeId).trim() : ""))
             .filter(Boolean);
-        const existingManagers = await User.find({
-            organizationId: orgId,
-            isDeleted: false,
-            $or: [
-                { "auth.email": { $in: candidateManagerEmails } },
-                { "employment.employeeId": { $in: candidateManagerEmpIds } },
-            ],
-        }, { "auth.email": 1, "employment.employeeId": 1, _id: 1 });
+        const managerLookupOr = [];
+        if (candidateManagerEmails.length > 0)
+            managerLookupOr.push({ "auth.email": { $in: candidateManagerEmails } });
+        if (candidateManagerEmpIds.length > 0)
+            managerLookupOr.push({ "employment.employeeId": { $in: candidateManagerEmpIds } });
+        const existingManagers = managerLookupOr.length > 0
+            ? await User.find({
+                organizationId: orgId,
+                isDeleted: false,
+                $or: managerLookupOr,
+            }, { "auth.email": 1, "employment.employeeId": 1, _id: 1 })
+            : [];
         const managerMap = new Map();
         existingManagers.forEach((m) => {
-            managerMap.set(m.auth.email.toLowerCase(), m._id);
+            if (m.auth?.email) {
+                managerMap.set(m.auth.email.toLowerCase(), m._id);
+            }
             if (m.employment?.employeeId) {
                 managerMap.set(m.employment.employeeId, m._id);
             }
@@ -537,16 +717,44 @@ export class EmployeeService {
         const documentsToInsert = [];
         const updatesToExecute = [];
         for (const data of usersData) {
-            const email = data.email?.toLowerCase().trim() || "";
-            if (!email) {
-                results.failures.push({ email: "", reason: "Email is required" });
+            const rawEmail = (data.email || "").trim();
+            const email = rawEmail.toLowerCase();
+            const rawEmpId = data.employeeId ? String(data.employeeId).trim() : "";
+            const rawPhone = data.phone ? String(data.phone).trim() : "";
+            const rawBadge = data.badgeId ? String(data.badgeId).trim() : "";
+            const rowIdentifier = rawEmail || rawEmpId || rawPhone || "";
+            if (!rowIdentifier) {
+                results.failures.push({ email: "", reason: "Row must include at least one identifier (email, employee ID, or phone)" });
                 continue;
             }
-            if (inFlightEmailSet.has(email)) {
-                results.failures.push({ email, reason: "Duplicate email in import batch." });
-                continue;
+            if (email) {
+                if (inFlightEmailSet.has(email)) {
+                    results.failures.push({ email: rowIdentifier, reason: "Duplicate email in import batch." });
+                    continue;
+                }
+                inFlightEmailSet.add(email);
             }
-            inFlightEmailSet.add(email);
+            if (rawEmpId) {
+                if (inFlightEmpIdSet.has(rawEmpId)) {
+                    results.failures.push({ email: rowIdentifier, reason: "Duplicate employee ID in import batch." });
+                    continue;
+                }
+                inFlightEmpIdSet.add(rawEmpId);
+            }
+            if (rawPhone) {
+                if (inFlightPhoneSet.has(rawPhone)) {
+                    results.failures.push({ email: rowIdentifier, reason: "Duplicate phone number in import batch." });
+                    continue;
+                }
+                inFlightPhoneSet.add(rawPhone);
+            }
+            if (rawBadge) {
+                if (inFlightBadgeSet.has(rawBadge)) {
+                    results.failures.push({ email: rowIdentifier, reason: "Duplicate badge ID in import batch." });
+                    continue;
+                }
+                inFlightBadgeSet.add(rawBadge);
+            }
             // Name resolution
             let firstName = data.firstName?.trim() || "";
             let lastName = data.lastName?.trim() || "";
@@ -595,28 +803,41 @@ export class EmployeeService {
             if (data.managerEmail && managerMap.has(data.managerEmail.toLowerCase().trim())) {
                 resolvedManagerId = managerMap.get(data.managerEmail.toLowerCase().trim());
             }
-            else if (data.managerEmployeeId && managerMap.has(data.managerEmployeeId.trim())) {
-                resolvedManagerId = managerMap.get(data.managerEmployeeId.trim());
+            else if (data.managerEmployeeId && managerMap.has(String(data.managerEmployeeId).trim())) {
+                resolvedManagerId = managerMap.get(String(data.managerEmployeeId).trim());
             }
             const designation = data.designation || data.jobTitle || undefined;
             const jobTitle = data.jobTitle || data.designation || undefined;
             // Check if user already exists
-            if (existingUserMap.has(email)) {
+            let existingUser = null;
+            if (email && existingEmailMap.has(email)) {
+                existingUser = existingEmailMap.get(email);
+            }
+            else if (rawEmpId && existingEmpIdMap.has(rawEmpId)) {
+                existingUser = existingEmpIdMap.get(rawEmpId);
+            }
+            else if (rawPhone && existingPhoneMap.has(rawPhone)) {
+                existingUser = existingPhoneMap.get(rawPhone);
+            }
+            if (existingUser) {
                 if (options?.updateExisting) {
-                    const existingUser = existingUserMap.get(email);
                     const updateFields = {
                         "profile.firstName": firstName || existingUser.profile?.firstName,
                         "profile.lastName": lastName || existingUser.profile?.lastName,
                         "profile.fullName": fullName || existingUser.profile?.fullName,
                     };
-                    if (data.phone)
-                        updateFields["profile.phone"] = data.phone;
+                    if (rawPhone)
+                        updateFields["profile.phone"] = rawPhone;
                     if (data.location)
                         updateFields["profile.location"] = data.location;
                     if (data.timezone)
                         updateFields["profile.timezone"] = data.timezone;
-                    if (data.employeeId)
-                        updateFields["employment.employeeId"] = data.employeeId;
+                    if (rawEmpId)
+                        updateFields["employment.employeeId"] = rawEmpId;
+                    if (rawBadge)
+                        updateFields["employment.badgeId"] = rawBadge;
+                    if (data.nationalId)
+                        updateFields["employment.nationalId"] = String(data.nationalId).trim();
                     if (cleanDeptName)
                         updateFields["employment.department"] = cleanDeptName;
                     if (resolvedDeptId)
@@ -639,43 +860,49 @@ export class EmployeeService {
                     continue;
                 }
                 else {
-                    results.failures.push({ email, reason: "A user with this email address already exists." });
+                    results.failures.push({ email: rowIdentifier, reason: "A user with this identifier already exists in this organization." });
                     continue;
                 }
             }
             // Enforce organization seat limit
             if (currentUserCount + documentsToInsert.length >= maxUsers) {
                 results.failures.push({
-                    email,
+                    email: rowIdentifier,
                     reason: `Organization seat limit reached (${maxUsers} seats maximum). Upgrade plan to add more members.`,
                 });
                 continue;
             }
+            // Frontline Fallback: Auto-provision EMP-XXXXXX if both email and employeeId are absent
+            const employeeId = rawEmpId || (!email ? `EMP-${crypto.randomBytes(3).toString("hex").toUpperCase()}` : undefined);
             // Construct user document to insert
             const newDocId = new mongoose.Types.ObjectId();
-            if (data.employeeId) {
-                managerMap.set(data.employeeId, newDocId);
+            if (employeeId) {
+                managerMap.set(employeeId, newDocId);
             }
-            managerMap.set(email, newDocId);
+            if (email) {
+                managerMap.set(email, newDocId);
+            }
             documentsToInsert.push({
                 _id: newDocId,
                 organizationId: new mongoose.Types.ObjectId(orgId),
                 auth: {
-                    email,
+                    ...(email ? { email } : {}),
                     passwordHash: defaultPasswordHash,
-                    emailVerified: true,
+                    emailVerified: Boolean(email),
                 },
                 profile: {
                     firstName: firstName || "Employee",
                     lastName: lastName || "",
                     fullName,
-                    phone: data.phone || undefined,
+                    phone: rawPhone || undefined,
                     location: data.location || undefined,
                     timezone: data.timezone || undefined,
                     customAttributes: data.customAttributes || undefined,
                 },
                 employment: {
-                    employeeId: data.employeeId || undefined,
+                    employeeId: employeeId || undefined,
+                    badgeId: rawBadge || undefined,
+                    nationalId: data.nationalId ? String(data.nationalId).trim() : undefined,
                     department: cleanDeptName,
                     departmentId: resolvedDeptId,
                     managerId: resolvedManagerId,
@@ -711,7 +938,8 @@ export class EmployeeService {
                 results.updatedCount++;
             }
             catch (err) {
-                results.failures.push({ email: item.userDoc.auth.email, reason: err.message || "Failed to update existing user" });
+                const docIdentifier = item.userDoc.auth?.email || item.userDoc.employment?.employeeId || item.userDoc.profile?.phone || "User";
+                results.failures.push({ email: docIdentifier, reason: err.message || "Failed to update existing user" });
             }
         }
         // Batch insert users in chunks of 250 and emit events
@@ -737,7 +965,7 @@ export class EmployeeService {
                             entityId: userDoc._id,
                             payload: {
                                 userId: userDoc._id.toString(),
-                                email: userDoc.auth.email,
+                                email: userDoc.auth?.email,
                                 role: userDoc.permissions.role,
                                 department: userDoc.employment?.departmentId?.toString() || userDoc.employment?.department,
                                 jobTitle: userDoc.employment?.designation || userDoc.employment?.jobTitle,
@@ -752,7 +980,7 @@ export class EmployeeService {
                                 employeeId: userDoc._id.toString(),
                                 source: "bulk_import",
                                 userId: userDoc._id.toString(),
-                                email: userDoc.auth.email,
+                                email: userDoc.auth?.email,
                                 role: userDoc.permissions.role,
                                 department: userDoc.employment?.departmentId?.toString() || userDoc.employment?.department,
                             },
@@ -766,7 +994,8 @@ export class EmployeeService {
                             console.warn("[EmployeeService] Role checklist auto-assign error:", e);
                         }
                     }
-                    if (options?.sendInvites) {
+                    // Only attempt to dispatch email invitation if the user account has a corporate email address
+                    if (options?.sendInvites && userDoc.auth?.email) {
                         try {
                             const rawToken = crypto.randomBytes(32).toString("hex");
                             const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
@@ -778,10 +1007,12 @@ export class EmployeeService {
                                     "employment.status": "invited",
                                 },
                             });
-                            const activeEmail = activeEmailClient || (await this.integrationService.getActiveEmailClient(userDoc.organizationId));
-                            activeEmail.service.sendInvitationEmail(activeEmail.config, activeEmail.secrets, userDoc.auth.email, rawToken, org.name).catch((err) => {
-                                console.warn(`[EmployeeService] Failed to send invite email to ${userDoc.auth.email}:`, err);
-                            });
+                            const activeEmail = activeEmailClient || (await this.integrationService.getActiveEmailClient(userDoc.organizationId).catch(() => null));
+                            if (activeEmail) {
+                                activeEmail.service.sendInvitationEmail(activeEmail.config, activeEmail.secrets, userDoc.auth.email, rawToken, org.name).catch((err) => {
+                                    console.warn(`[EmployeeService] Failed to send invite email to ${userDoc.auth.email}:`, err);
+                                });
+                            }
                         }
                         catch (invErr) {
                             console.warn("[EmployeeService] Bulk sendInvites processing error:", invErr);
@@ -808,7 +1039,7 @@ export class EmployeeService {
                                 entityId: userDoc._id,
                                 payload: {
                                     userId: userDoc._id.toString(),
-                                    email: userDoc.auth.email,
+                                    email: userDoc.auth?.email,
                                     role: userDoc.permissions.role,
                                     department: userDoc.employment?.departmentId?.toString() || userDoc.employment?.department,
                                     jobTitle: userDoc.employment?.designation || userDoc.employment?.jobTitle,
@@ -823,7 +1054,7 @@ export class EmployeeService {
                                     employeeId: userDoc._id.toString(),
                                     source: "bulk_import",
                                     userId: userDoc._id.toString(),
-                                    email: userDoc.auth.email,
+                                    email: userDoc.auth?.email,
                                     role: userDoc.permissions.role,
                                     department: userDoc.employment?.departmentId?.toString() || userDoc.employment?.department,
                                 },
@@ -837,15 +1068,17 @@ export class EmployeeService {
                 if (err.writeErrors && Array.isArray(err.writeErrors)) {
                     for (const we of err.writeErrors) {
                         const failedDoc = batch[we.index];
+                        const docIdentifier = failedDoc?.auth?.email || failedDoc?.employment?.employeeId || failedDoc?.profile?.phone || "Row " + we.index;
                         results.failures.push({
-                            email: failedDoc?.auth?.email || "",
+                            email: docIdentifier,
                             reason: we.errmsg || "Insert failed",
                         });
                     }
                 }
                 else {
                     for (const item of batch) {
-                        results.failures.push({ email: item.auth.email, reason: err.message || "Batch insert error" });
+                        const docIdentifier = item?.auth?.email || item?.employment?.employeeId || item?.profile?.phone || "Row";
+                        results.failures.push({ email: docIdentifier, reason: err.message || "Batch insert error" });
                     }
                 }
             }
@@ -853,7 +1086,7 @@ export class EmployeeService {
         return {
             ...results,
             defaultCredentials: {
-                temporaryPassword: "Welcome@2026!",
+                temporaryPassword: "Password@123!",
                 mustChangePassword: true,
                 loginUrl: "/login",
             },
@@ -877,4 +1110,5 @@ export class EmployeeService {
         return user;
     }
 }
+export const employeeService = new EmployeeService();
 export default EmployeeService;

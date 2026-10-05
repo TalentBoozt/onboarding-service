@@ -138,6 +138,8 @@ const OrganizationSchema = new Schema({
         enforceSSO: { type: Boolean, default: false },
         status: { type: String, enum: ["active", "disabled"], default: "disabled" },
     },
+    integrations: { type: Schema.Types.Mixed, default: {} },
+    kioskSettings: { type: Schema.Types.Mixed, default: {} },
     createdBy: { type: Schema.Types.ObjectId, required: true },
     updatedBy: { type: Schema.Types.ObjectId },
     isDeleted: { type: Boolean, default: false },

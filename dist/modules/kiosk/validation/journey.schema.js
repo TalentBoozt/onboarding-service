@@ -9,7 +9,8 @@ export const KioskJourneySecuritySettingsSchema = z
     .object({
     protectionType: KioskSecurityProtectionTypeSchema,
     pinCode: z.string().optional(),
-    expiresAt: z.union([z.date(), z.string().datetime()]).nullable().optional()
+    expiresAt: z.union([z.date(), z.string().datetime()]).nullable().optional(),
+    requireSupervisorWitness: z.boolean().optional()
 })
     .strict()
     .superRefine((data, ctx) => {
@@ -55,17 +56,44 @@ export const KioskJourneySettingsSchema = z
     autoReturnHome: z.boolean(),
     hideNavigation: z.boolean(),
     disableExit: z.boolean(),
-    security: KioskJourneySecuritySettingsSchema
+    requireSupervisorWitness: z.boolean().optional(),
+    security: KioskJourneySecuritySettingsSchema,
+    minimumDurationSeconds: z.number().nonnegative().optional(),
+    enforceMandatorySteps: z.boolean().optional(),
+    passingScorePercentage: z.number().min(0).max(100).optional()
 })
     .strict();
+/**
+ * Scheduling window settings for published/scheduled journeys.
+ */
+export const KioskJourneySchedulingSettingsSchema = z
+    .object({
+    publishAt: z.union([z.date(), z.string().datetime()]).nullable().optional(),
+    expiresAt: z.union([z.date(), z.string().datetime()]).nullable().optional()
+})
+    .strict()
+    .superRefine((data, ctx) => {
+    if (data.publishAt && data.expiresAt) {
+        const pubDate = new Date(data.publishAt);
+        const expDate = new Date(data.expiresAt);
+        if (expDate <= pubDate) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ["expiresAt"],
+                message: "Expiration date must be after scheduled publication date"
+            });
+        }
+    }
+});
 /**
  * Publishing lifecycle status and version metadata.
  */
 export const KioskPublishingSettingsSchema = z
     .object({
-    status: z.enum(["draft", "published", "archived"]),
+    status: z.enum(["draft", "published", "archived", "scheduled"]),
     version: z.number().int().positive(),
-    publishedAt: z.union([z.date(), z.string().datetime()]).nullable().optional()
+    publishedAt: z.union([z.date(), z.string().datetime()]).nullable().optional(),
+    scheduling: KioskJourneySchedulingSettingsSchema.optional()
 })
     .strict();
 /**
@@ -108,11 +136,11 @@ const refineJourneyData = (data, ctx) => {
     // 2. Validate step list constraints
     const stepIds = new Set();
     const stepOrders = new Set();
-    if (data.publishing.status === "published" && data.steps.length === 0) {
+    if ((data.publishing.status === "published" || data.publishing.status === "scheduled") && data.steps.length === 0) {
         ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ["steps"],
-            message: "Published journeys must contain at least one step"
+            message: "Published or scheduled journeys must contain at least one step"
         });
     }
     data.steps.forEach((step, idx) => {

@@ -6,11 +6,13 @@ import { KioskAnalyticsRepository } from "../repositories/kiosk-analytics.reposi
 import { KioskSecurityService } from "../services/kiosk-security.service.js";
 import { authenticate, requireRole, requireFeatureFlag } from "../../../middleware/auth.middleware.js";
 import { verifySignedUrl, verifyDeviceToken } from "../plugins/kiosk-auth.plugin.js";
-import { CreateKioskJourneySchema, UpdateKioskJourneySchema, KioskDeviceHeartbeatSchema, KioskAnalyticsBulkSyncSchema } from "../validation/index.js";
+import { CreateKioskJourneySchema, UpdateKioskJourneySchema, KioskDeviceHeartbeatSchema, KioskAnalyticsBulkSyncSchema, CreateKioskSessionSchema, UpdateKioskSessionProgressSchema, CompleteKioskSessionSchema, AbortKioskSessionSchema, TimeoutKioskSessionSchema, VerifySupervisorPinSchema, EmergencyBroadcastSchema, EmergencyClearSchema } from "../validation/index.js";
 import { z } from "zod";
 import mongoose from "mongoose";
 import { storageConfig } from "../../../config/index.js";
 import AppError from "../../../common/errors/app-error.js";
+import { kioskCertificateService } from "../services/kiosk-certificate.service.js";
+import { kioskSyntheticProbeService } from "../services/kiosk-synthetic-probe.service.js";
 export async function kioskRoutes(app) {
     const journeyRepo = new KioskJourneyRepository();
     const deviceRepo = new KioskDeviceRepository();
@@ -19,15 +21,139 @@ export async function kioskRoutes(app) {
     const kioskService = new KioskService(journeyRepo, deviceRepo, analyticsRepo, securityService, app.jwt);
     const controller = new KioskController(kioskService);
     // --- PUBLIC ENDPOINTS (No Admin Auth) ---
-    // GET /api/v1/kiosk/journeys/play/:id (Kiosk Playback via Signed URL)
+    // --- SYNTHETIC MONITORING & FLEET HEALTH PROBES (K-REL-003) ---
+    // GET /api/v1/kiosk/health/synthetic (Subsystem latencies: DB, storage, auth)
+    app.get("/health/synthetic", controller.getSyntheticHealth);
+    // POST /api/v1/kiosk/health/synthetic/auth (Authenticate synthetic test terminal)
+    app.post("/health/synthetic/auth", controller.authenticateSyntheticTerminal);
+    // GET /api/v1/kiosk/health/synthetic/sample-asset (Fetch sample step asset for pipeline verification)
+    app.get("/health/synthetic/sample-asset", controller.getSyntheticSampleAsset);
+    // Multi-modal preHandler for journey playback & retrieval
+    // Supports: Paired Kiosk Device Token, Ephemeral Frontline Worker Token, Signed URL HMAC, Admin/Employee JWT, or Public Tenant query
+    const journeyPlaybackPreHandler = async (request, reply) => {
+        const authHeader = request.headers.authorization;
+        if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+            const rawToken = authHeader.substring(7).trim();
+            let decoded = null;
+            try {
+                decoded = app.jwt.decode(rawToken);
+            }
+            catch {
+                // Fall-through if malformed
+            }
+            if (decoded?.role === "kiosk_device") {
+                await verifyDeviceToken(request, reply);
+                return;
+            }
+            if (decoded?.role === "frontline_worker_kiosk") {
+                try {
+                    await request.jwtVerify();
+                    request.kioskContext = {
+                        organizationId: decoded.organizationId,
+                        workerId: decoded.userId || decoded.workerId,
+                        kioskDeviceId: decoded.kioskDeviceId
+                    };
+                    return;
+                }
+                catch (err) {
+                    throw new AppError(401, "TOKEN_EXPIRED", "Frontline worker session has expired. Please re-identify.");
+                }
+            }
+            // Standard authenticated user (owner, admin, employee, etc.)
+            try {
+                await authenticate(request, reply);
+                return;
+            }
+            catch {
+                // Fall-through if token expired/invalid, checking signed url or public published access below
+            }
+        }
+        // Check signed URL query params (sig, exp, o)
+        const query = request.query;
+        if (query?.sig && query?.exp && query?.o) {
+            await verifySignedUrl(request, reply);
+            return;
+        }
+        // Unauthenticated public / tenant journey query:
+        // If request has organization query or header, attach it
+        const reqOrgId = query?.organizationId || query?.o || request.headers["x-organization-id"];
+        if (reqOrgId) {
+            request.kioskContext = {
+                organizationId: reqOrgId.toString()
+            };
+        }
+    };
+    // GET /api/v1/kiosk/journeys/:id (Kiosk Journey Retrieval - Device, Worker, Admin, or Public)
+    app.get("/journeys/:id", {
+        preHandler: [journeyPlaybackPreHandler]
+    }, controller.getJourney);
+    // GET /api/v1/kiosk/journeys/play/:id (Kiosk Playback via Signed URL, Device, or Worker)
     app.get("/journeys/play/:id", {
-        preHandler: [verifySignedUrl]
+        preHandler: [journeyPlaybackPreHandler]
     }, controller.getJourney);
     // GET /api/v1/kiosk/sessions/:id (Kiosk Session retrieval & telemetry)
     app.get("/sessions/:id", controller.getSession);
+    // GET /api/v1/kiosk/sessions/:id/certificate (Retrieve structured completion certificate)
+    app.get("/sessions/:id/certificate", async (request, reply) => {
+        const { id } = request.params;
+        const certData = await kioskCertificateService.generateCertificateData(id);
+        return reply.status(200).send({
+            success: true,
+            data: certData,
+        });
+    });
+    // GET /api/v1/kiosk/sessions/:id/certificate/svg (Render high-resolution vector SVG certificate)
+    app.get("/sessions/:id/certificate/svg", async (request, reply) => {
+        const { id } = request.params;
+        const certData = await kioskCertificateService.generateCertificateData(id);
+        const svg = await kioskCertificateService.generateSvgCertificate(certData);
+        return reply
+            .header("Content-Type", "image/svg+xml; charset=utf-8")
+            .header("Content-Disposition", `inline; filename="certificate-${id}.svg"`)
+            .status(200)
+            .send(svg);
+    });
+    // POST /api/v1/kiosk/sessions (Start/create new formal kiosk session, K-EMP-002)
+    app.post("/sessions", {
+        schema: {
+            body: CreateKioskSessionSchema
+        }
+    }, controller.createSession);
+    // PATCH /api/v1/kiosk/sessions/:id/progress (Step progress & dwell time heartbeat)
+    app.patch("/sessions/:id/progress", {
+        schema: {
+            body: UpdateKioskSessionProgressSchema
+        }
+    }, controller.updateSessionProgress);
+    // POST /api/v1/kiosk/sessions/:id/complete (Server-authoritative completion check)
+    app.post("/sessions/:id/complete", {
+        schema: {
+            body: CompleteKioskSessionSchema
+        }
+    }, controller.completeSession);
+    // POST /api/v1/kiosk/sessions/:id/abort (Session abandonment or manual exit)
+    app.post("/sessions/:id/abort", {
+        schema: {
+            body: AbortKioskSessionSchema
+        }
+    }, controller.abortSession);
+    // POST /api/v1/kiosk/sessions/:id/timeout (Session idle timeout or privacy reset)
+    app.post("/sessions/:id/timeout", {
+        schema: {
+            body: TimeoutKioskSessionSchema
+        }
+    }, controller.timeoutSession);
     // GET /api/v1/kiosk/uploads/:id (Retrieve/stream public kiosk uploads via redirect)
     app.get("/uploads/:id", async (request, reply) => {
         const params = request.params;
+        if (params.id === "sample-asset" || params.id === "sample") {
+            const sample = kioskSyntheticProbeService.getSampleStepAsset();
+            return reply
+                .header("Content-Type", sample.contentType)
+                .header("Cache-Control", "public, max-age=3600")
+                .status(200)
+                .send(sample.data);
+        }
         let upload;
         try {
             upload = await mongoose.model("Upload").findById(params.id);
@@ -79,61 +205,198 @@ export async function kioskRoutes(app) {
             })
         }
     }, controller.pairDevice);
-    // POST /api/v1/kiosk/identify (Identify frontline worker via badgeId / nationalId and issue ephemeral session token)
+    // POST /api/v1/kiosk/devices/enroll/mdm (MDM Zero-Touch Enrollment - public to MDM managed devices, K-ENT-002)
+    app.post("/devices/enroll/mdm", {
+        schema: {
+            body: z.object({
+                organizationSlug: z.string().min(1, "Organization slug is required"),
+                enrollmentSecret: z.string().min(1, "MDM enrollment secret is required"),
+                deviceId: z.string().optional(),
+                deviceHardwareId: z.string().optional(),
+                name: z.string().optional(),
+                deviceName: z.string().optional(),
+                location: z.string().optional(),
+                siteId: z.string().optional(),
+                deviceModel: z.string().optional(),
+                osVersion: z.string().optional(),
+                appVersion: z.string().optional(),
+            }).refine((data) => Boolean(data.deviceId || data.deviceHardwareId), {
+                message: "Either deviceId or deviceHardwareId is required",
+            }),
+        },
+    }, controller.enrollMdmDevice);
+    // POST /api/v1/kiosk/identify (Identify frontline worker via employeeId / badgeId / batchId / email / nationalId)
     app.post("/identify", {
         schema: {
             body: z.object({
-                identifier: z.string().min(1, "Identifier (badgeId or nationalId) is required"),
+                identifier: z.string().optional(),
+                badgeId: z.string().optional(),
+                batchId: z.string().optional(),
+                employeeId: z.string().optional(),
+                email: z.string().optional(),
+                nationalId: z.string().optional(),
                 kioskDeviceId: z.string().optional(),
-            }),
+                organizationId: z.string().optional(),
+            }).refine((data) => Boolean(data.identifier || data.badgeId || data.batchId || data.employeeId || data.email || data.nationalId), { message: "At least one credential (employeeId, badgeId, batchId, email, or nationalId) is required" }),
         },
     }, controller.identifyFrontlineWorker);
-    // POST /api/v1/kiosk/supervisor/verify-pin (Verify supervisor 4-digit PIN for co-signature / touch override)
+    // POST /api/v1/kiosk/supervisor/verify-pin (Verify supervisor 4-digit PIN for co-signature / touch override, K-SUP-001)
     app.post("/supervisor/verify-pin", {
         schema: {
-            body: z.object({
-                supervisorIdentifier: z.string().min(1, "Supervisor email, badgeId, or userId is required"),
-                pin: z.string().length(4, "PIN must be exactly 4 digits"),
-            }),
+            body: VerifySupervisorPinSchema,
         },
     }, controller.verifySupervisorPin);
+    // --- EMERGENCY KIOSK OVERRIDE ENDPOINTS (K-SEC-004) ---
+    const emergencyAuthPreHandler = async (request, reply) => {
+        const headers = request.headers;
+        const webhookKey = headers["x-emergency-webhook-key"] || headers["x-safety-webhook-secret"];
+        const configuredSecret = process.env.EMERGENCY_WEBHOOK_KEY || "talnova_safety_webhook_secret";
+        if (webhookKey && webhookKey === configuredSecret) {
+            return;
+        }
+        await authenticate(request, reply);
+    };
+    const emergencyReadPreHandler = async (request, reply) => {
+        const authHeader = request.headers.authorization;
+        if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+            try {
+                const decoded = app.jwt.decode(authHeader.substring(7));
+                if (decoded?.role === "kiosk_device") {
+                    await verifyDeviceToken(request, reply);
+                    return;
+                }
+                await authenticate(request, reply);
+                return;
+            }
+            catch {
+                // Fall-through to query / header check
+            }
+        }
+        const query = request.query;
+        const headers = request.headers;
+        if (!query?.organizationId && !query?.o && !headers["x-organization-id"]) {
+            await authenticate(request, reply);
+        }
+    };
+    // POST /api/v1/kiosk/emergency/broadcast (Admin or Safety Webhook)
+    app.post("/emergency/broadcast", {
+        preHandler: [emergencyAuthPreHandler],
+        schema: {
+            body: EmergencyBroadcastSchema
+        }
+    }, controller.broadcastEmergency);
+    // POST /api/v1/kiosk/emergency/clear (Deactivate emergency broadcast)
+    app.post("/emergency/clear", {
+        preHandler: [emergencyAuthPreHandler],
+        schema: {
+            body: EmergencyClearSchema
+        }
+    }, controller.clearEmergency);
+    // DELETE /api/v1/kiosk/emergency/broadcast (Alias to clear)
+    app.delete("/emergency/broadcast", {
+        preHandler: [emergencyAuthPreHandler]
+    }, controller.clearEmergency);
+    // GET /api/v1/kiosk/emergency/status (Query active emergency for tenant)
+    app.get("/emergency/status", {
+        preHandler: [emergencyReadPreHandler]
+    }, controller.getEmergencyStatus);
+    // GET /api/v1/kiosk/emergency/stream (SSE Stream for real-time terminal override)
+    app.get("/emergency/stream", {
+        preHandler: [emergencyReadPreHandler]
+    }, controller.streamEmergency);
     // --- DEVICE AUTHORIZED ENDPOINTS ---
-    // POST /api/v1/kiosk/devices/heartbeat (Device token heartbeat ping)
+    // POST /api/v1/kiosk/devices/refresh-token (Device credential rotation, K-DEV-003)
+    app.post("/devices/refresh-token", {
+        preHandler: [verifyDeviceToken]
+    }, controller.refreshDeviceToken);
+    // POST /api/v1/kiosk/devices/heartbeat & /heartbeat (Device token heartbeat ping)
     app.post("/devices/heartbeat", {
         preHandler: [verifyDeviceToken],
         schema: {
             body: KioskDeviceHeartbeatSchema
         }
     }, controller.heartbeat);
-    // POST /api/v1/kiosk/analytics/sync (Offline analytics bulk upload)
-    app.post("/analytics/sync", {
-        preHandler: [
-            async (request, reply) => {
-                const authHeader = request.headers.authorization;
-                if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
-                    try {
-                        const decoded = app.jwt.decode(authHeader.substring(7));
-                        if (decoded?.role === "kiosk_device") {
-                            await verifyDeviceToken(request, reply);
-                            return;
-                        }
-                    }
-                    catch (err) {
-                        // Fail-through to standard authenticate
-                    }
-                }
-                const query = request.query;
-                if (query?.sig && query?.exp && query?.o) {
-                    await verifySignedUrl(request, reply);
-                    return;
-                }
-                await authenticate(request, reply);
+    app.post("/heartbeat", {
+        preHandler: [verifyDeviceToken],
+        schema: {
+            body: KioskDeviceHeartbeatSchema
+        }
+    }, controller.heartbeat);
+    // Reusable preHandler for sync endpoints (supports device token, signed URL, or admin JWT)
+    const syncAuthPreHandler = async (request, reply) => {
+        const authHeader = request.headers.authorization;
+        if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+            let decoded = null;
+            try {
+                decoded = app.jwt.decode(authHeader.substring(7));
             }
-        ],
+            catch {
+                // Fall-through if malformed
+            }
+            if (decoded?.role === "kiosk_device") {
+                await verifyDeviceToken(request, reply);
+                return;
+            }
+        }
+        const query = request.query;
+        if (query?.sig && query?.exp && query?.o) {
+            await verifySignedUrl(request, reply);
+            return;
+        }
+        await authenticate(request, reply);
+    };
+    // POST /api/v1/kiosk/analytics/sync & /sync (Offline analytics bulk upload)
+    app.post("/analytics/sync", {
+        preHandler: [syncAuthPreHandler],
         schema: {
             body: KioskAnalyticsBulkSyncSchema
         }
     }, controller.syncAnalytics);
+    app.post("/sync", {
+        preHandler: [syncAuthPreHandler],
+        schema: {
+            body: KioskAnalyticsBulkSyncSchema
+        }
+    }, controller.syncAnalytics);
+    // Reusable preHandler for manifest endpoints (supports device token or admin JWT)
+    const manifestAuthPreHandler = async (request, reply) => {
+        const authHeader = request.headers.authorization;
+        if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+            let decoded = null;
+            try {
+                decoded = app.jwt.decode(authHeader.substring(7));
+            }
+            catch {
+                // Fall-through if malformed
+            }
+            if (decoded?.role === "kiosk_device") {
+                await verifyDeviceToken(request, reply);
+                return;
+            }
+        }
+        await authenticate(request, reply);
+    };
+    // GET /api/v1/kiosk/devices/manifest & /manifest (Device manifest for requesting terminal)
+    app.get("/devices/manifest", {
+        preHandler: [manifestAuthPreHandler]
+    }, controller.getDeviceManifest);
+    app.get("/manifest", {
+        preHandler: [manifestAuthPreHandler]
+    }, controller.getDeviceManifest);
+    // GET /api/v1/kiosk/devices/:deviceId/manifest (Device manifest by device ID / fingerprint, ADR-005)
+    app.get("/devices/:deviceId/manifest", {
+        preHandler: [manifestAuthPreHandler]
+    }, controller.getDeviceManifest);
+    // GET /api/v1/kiosk/devices/commands, /devices/:deviceId/commands & /commands (Remote administration commands)
+    app.get("/devices/commands", {
+        preHandler: [verifyDeviceToken]
+    }, controller.getDeviceCommands);
+    app.get("/devices/:deviceId/commands", {
+        preHandler: [verifyDeviceToken]
+    }, controller.getDeviceCommands);
+    app.get("/commands", {
+        preHandler: [verifyDeviceToken]
+    }, controller.getDeviceCommands);
     // --- ADMIN AUTHORIZED ENDPOINTS (Requires Owner/Admin Role) ---
     app.register(async (adminGroup) => {
         adminGroup.addHook("preHandler", authenticate);
@@ -141,8 +404,6 @@ export async function kioskRoutes(app) {
         adminGroup.addHook("preHandler", requireFeatureFlag("kiosk_mode"));
         // GET /api/v1/kiosk/journeys
         adminGroup.get("/journeys", controller.listJourneys);
-        // GET /api/v1/kiosk/journeys/:id
-        adminGroup.get("/journeys/:id", controller.getJourney);
         // POST /api/v1/kiosk/journeys
         adminGroup.post("/journeys", {
             schema: {
@@ -157,14 +418,33 @@ export async function kioskRoutes(app) {
         }, controller.updateJourney);
         // DELETE /api/v1/kiosk/journeys/:id
         adminGroup.delete("/journeys/:id", controller.deleteJourney);
+        // POST /api/v1/kiosk/journeys/:id/validate
+        adminGroup.post("/journeys/:id/validate", controller.validateJourney);
         // POST /api/v1/kiosk/journeys/:id/publish
         adminGroup.post("/journeys/:id/publish", controller.publishJourney);
+        // POST /api/v1/kiosk/journeys/:id/unpublish
+        adminGroup.post("/journeys/:id/unpublish", controller.unpublishJourney);
+        // POST /api/v1/kiosk/journeys/:id/rollback/:version
+        adminGroup.post("/journeys/:id/rollback/:version", controller.rollbackJourney);
+        // POST /api/v1/kiosk/publishing/process
+        adminGroup.post("/publishing/process", controller.triggerScheduledPublishing);
+        // GET /api/v1/kiosk/journeys/:id/versions (list version history)
+        adminGroup.get("/journeys/:id/versions", controller.listJourneyVersions);
+        // GET /api/v1/kiosk/journeys/:id/versions/:version (retrieve specific immutable snapshot)
+        adminGroup.get("/journeys/:id/versions/:version", controller.getJourneyVersion);
+        // Prohibited mutation guards for immutable version snapshots (DEF-006)
+        adminGroup.put("/journeys/:id/versions/:version", async () => {
+            throw new AppError(400, "IMMUTABLE_VERSION", "Published journey versions are strictly immutable and cannot be modified.");
+        });
+        adminGroup.delete("/journeys/:id/versions/:version", async () => {
+            throw new AppError(400, "IMMUTABLE_VERSION", "Published journey versions are strictly immutable and cannot be deleted.");
+        });
         // POST /api/v1/kiosk/devices/pair/code (Generate pairing code)
         adminGroup.post("/devices/pair/code", {
             schema: {
                 body: z.object({
-                    deviceId: z.string().min(1, "Hardware GUID is required")
-                })
+                    deviceId: z.string().optional()
+                }).optional()
             }
         }, controller.generatePairingCode);
         // GET /api/v1/kiosk/devices (List paired devices)
@@ -177,17 +457,73 @@ export async function kioskRoutes(app) {
                 })
             }
         }, controller.pairJourneyToDevice);
+        // POST /api/v1/kiosk/devices/:id/assignments (Batch update device assignments, K-ASN-001)
+        adminGroup.post("/devices/:id/assignments", controller.setDeviceAssignments);
+        // POST /api/v1/kiosk/devices/:id/commands (Queue administrative command for device)
+        adminGroup.post("/devices/:id/commands", {
+            schema: {
+                body: z
+                    .object({
+                    type: z.string().optional(),
+                    command: z.string().optional(),
+                    payload: z.record(z.string(), z.unknown()).optional()
+                })
+                    .refine((data) => Boolean(data.type || data.command), {
+                    message: "Either type or command must be provided"
+                })
+            }
+        }, controller.queueCommand);
+        // GET /api/v1/kiosk/devices/:id/assignments (List assigned journeys for device, K-ASN-001)
+        adminGroup.get("/devices/:id/assignments", controller.getDeviceAssignments);
+        // --- Device Group Management (K-ASN-003) ---
+        // GET /api/v1/kiosk/groups
+        adminGroup.get("/groups", controller.getDeviceGroups);
+        // GET /api/v1/kiosk/groups/:id
+        adminGroup.get("/groups/:id", controller.getDeviceGroupById);
+        // POST /api/v1/kiosk/groups
+        adminGroup.post("/groups", controller.createDeviceGroup);
+        // PUT /api/v1/kiosk/groups/:id
+        adminGroup.put("/groups/:id", controller.updateDeviceGroup);
+        // DELETE /api/v1/kiosk/groups/:id
+        adminGroup.delete("/groups/:id", controller.deleteDeviceGroup);
+        // POST /api/v1/kiosk/groups/:id/assignments (Batch update group assignments)
+        adminGroup.post("/groups/:id/assignments", controller.setGroupAssignments);
+        // GET /api/v1/kiosk/groups/:id/assignments (List assigned journeys for group)
+        adminGroup.get("/groups/:id/assignments", controller.getGroupAssignments);
         // GET /api/v1/kiosk/journeys/:id/analytics
         adminGroup.get("/journeys/:id/analytics", controller.getJourneyAnalyticsSummary);
+        // GET /api/v1/kiosk/journeys/:id/analytics/funnel (K-ANA-001 Step Funnel Drop-off)
+        adminGroup.get("/journeys/:id/analytics/funnel", controller.getStepDropOffFunnel);
         // POST /api/v1/kiosk/supervisor/pin (Set or update supervisor 4-digit PIN)
         adminGroup.post("/supervisor/pin", {
             schema: {
-                body: z.object({
-                    supervisorId: z.string().min(1, "Supervisor ID is required"),
-                    pin: z.string().length(4, "PIN must be exactly 4 digits"),
+                body: z
+                    .object({
+                    supervisorId: z.string().min(1).optional(),
+                    supervisorIdentifier: z.string().min(1).optional(),
+                    pin: z.string().regex(/^\d{4}$/, "PIN must be exactly 4 digits"),
+                })
+                    .refine((data) => Boolean(data.supervisorId || data.supervisorIdentifier), {
+                    message: "Supervisor ID or identifier is required",
+                    path: ["supervisorId"],
                 }),
             },
         }, controller.setSupervisorPin);
+        // PATCH /api/v1/kiosk/devices/:id (Update device metadata, location, group)
+        adminGroup.patch("/devices/:id", {
+            schema: {
+                params: z.object({
+                    id: z.string().min(1)
+                }),
+                body: z.object({
+                    name: z.string().optional(),
+                    location: z.string().optional(),
+                    siteId: z.string().nullable().optional(),
+                    deviceType: z.string().optional(),
+                    deviceGroupId: z.string().nullable().optional()
+                })
+            }
+        }, controller.updateDevice);
         // PATCH /api/v1/kiosk/devices/:id/maintenance (Toggle Maintenance Mode)
         adminGroup.patch("/devices/:id/maintenance", {
             schema: {
@@ -196,6 +532,27 @@ export async function kioskRoutes(app) {
                 }),
             },
         }, controller.toggleMaintenanceMode);
+        // POST /api/v1/kiosk/devices/sentinel/scan (Trigger Fleet Health Sentinel Scan)
+        adminGroup.post("/devices/sentinel/scan", controller.triggerFleetHealthSentinel);
+        // POST /api/v1/kiosk/devices/:id/revoke (Revoke device credentials and decommission, K-DEV-004)
+        adminGroup.post("/devices/:id/revoke", controller.revokeDevice);
+        // DELETE /api/v1/kiosk/devices/:id (Revoke and decommission device)
+        adminGroup.delete("/devices/:id", controller.revokeDevice);
+        // --- Compliance & Audit Packet Endpoints (K-ANA-003) ---
+        // GET /api/v1/kiosk/compliance/summary (Overall compliance summary)
+        adminGroup.get("/compliance/summary", controller.getComplianceSummary);
+        // GET /api/v1/kiosk/compliance/by-department (Departmental breakdown)
+        adminGroup.get("/compliance/by-department", controller.getComplianceByDepartment);
+        // GET /api/v1/kiosk/compliance/export (Export compliance audit report CSV/JSON)
+        adminGroup.get("/compliance/export", controller.exportComplianceReport);
     });
+    // --- Direct / Integration Webhook Endpoints (K-ENT-003) ---
+    app.get("/webhooks/subscriptions", controller.getWebhookSubscriptions);
+    app.post("/webhooks/subscriptions", controller.createWebhookSubscription);
+    app.get("/webhooks/subscriptions/:id", controller.getWebhookSubscriptionById);
+    app.patch("/webhooks/subscriptions/:id", controller.updateWebhookSubscription);
+    app.delete("/webhooks/subscriptions/:id", controller.deleteWebhookSubscription);
+    app.get("/webhooks/deliveries", controller.getWebhookDeliveries);
+    app.post("/webhooks/test", controller.testWebhookDispatch);
 }
 export default kioskRoutes;
