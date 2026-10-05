@@ -59,18 +59,31 @@ export class KioskJourneyRepository {
             }
         }, { new: true });
     }
-    async publish(id, publishedBy) {
+    async publish(id, publishedBy, nextVersion, options) {
         const journey = await this.findById(id);
         if (!journey)
             return null;
-        const currentVersion = journey.publishing.version;
-        const nextVersion = journey.publishing.status === "published" ? currentVersion : currentVersion + 1;
+        const versionToSet = nextVersion !== undefined
+            ? nextVersion
+            : journey.publishing.status === "published"
+                ? journey.publishing.version
+                : journey.publishing.version + 1;
+        const setFields = {
+            "publishing.status": options?.status || "published",
+            "publishing.version": versionToSet,
+            "publishing.publishedAt": new Date(),
+            updatedBy: new mongoose.Types.ObjectId(publishedBy)
+        };
+        if (options?.scheduling !== undefined) {
+            setFields["publishing.scheduling"] = options.scheduling;
+        }
+        return KioskJourneyModel.findOneAndUpdate({ _id: id, isDeleted: false }, { $set: setFields }, { new: true });
+    }
+    async unpublish(id, userId) {
         return KioskJourneyModel.findOneAndUpdate({ _id: id, isDeleted: false }, {
             $set: {
-                "publishing.status": "published",
-                "publishing.version": nextVersion,
-                "publishing.publishedAt": new Date(),
-                updatedBy: new mongoose.Types.ObjectId(publishedBy)
+                "publishing.status": "draft",
+                updatedBy: new mongoose.Types.ObjectId(userId)
             }
         }, { new: true });
     }

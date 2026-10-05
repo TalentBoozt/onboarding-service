@@ -245,6 +245,9 @@ export class HRISIntegrationService {
                     updatedCount++;
                     continue;
                 }
+                const badgeId = mappedData.badgeId || rawRecord.badge_id || rawRecord.badgeId || rawRecord["urn:ietf:params:scim:schemas:extension:talnova:2.0:User:badgeId"] || rawRecord["urn:ietf:params:scim:schemas:extension:talnova:2.0:User"]?.badgeId;
+                const employeeId = mappedData.employeeId || rawRecord.employee_id || rawRecord.employeeId || rawRecord.employeeNumber || rawRecord["urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:employeeNumber"] || rawRecord["urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"]?.employeeNumber;
+                const nationalId = mappedData.nationalId || rawRecord.national_id || rawRecord.nationalId || rawRecord["urn:ietf:params:scim:schemas:extension:talnova:2.0:User:nationalId"] || rawRecord["urn:ietf:params:scim:schemas:extension:talnova:2.0:User"]?.nationalId;
                 let user = await User.findOne({
                     organizationId: orgObjectId,
                     "auth.email": email.toLowerCase(),
@@ -264,6 +267,9 @@ export class HRISIntegrationService {
                         employment: {
                             department: mappedData.department || rawRecord.department || "General",
                             jobTitle: mappedData.jobTitle || rawRecord.job_title || "Employee",
+                            employeeId: employeeId ? String(employeeId).trim() : undefined,
+                            badgeId: badgeId ? String(badgeId).trim() : undefined,
+                            nationalId: nationalId ? String(nationalId).trim() : undefined,
                             onboardingState: "active",
                         },
                         permissions: {
@@ -283,6 +289,12 @@ export class HRISIntegrationService {
                             user.employment.department = mappedData.department;
                         if (mappedData.jobTitle)
                             user.employment.jobTitle = mappedData.jobTitle;
+                        if (badgeId)
+                            user.employment.badgeId = String(badgeId).trim();
+                        if (employeeId)
+                            user.employment.employeeId = String(employeeId).trim();
+                        if (nationalId)
+                            user.employment.nationalId = String(nationalId).trim();
                         await user.save();
                     }
                     updatedCount++;
@@ -375,24 +387,19 @@ export class HRISIntegrationService {
             integration = activeIntegrations[activeIntegrations.length - 1];
         }
         // Strict HMAC signature verification (INT-002)
-        const isTestEnv = process.env.NODE_ENV === "test" || !!process.env.VITEST;
         if (integration.webhookSecret) {
             if (!signature || !signature.trim()) {
-                if (!isTestEnv) {
-                    throw new AppError(401, "UNAUTHORIZED", "Missing webhook HMAC signature");
-                }
+                throw new AppError(401, "UNAUTHORIZED", "Missing webhook HMAC signature");
             }
-            else {
-                const expectedSignature = crypto
-                    .createHmac("sha256", integration.webhookSecret)
-                    .update(payloadString)
-                    .digest("hex");
-                if (cleanSignature !== expectedSignature &&
-                    signature !== expectedSignature &&
-                    !signature.includes(expectedSignature)) {
-                    if (!isTestEnv || (signature !== "dummy_signature" && !signature.includes("dummy"))) {
-                        throw new AppError(401, "UNAUTHORIZED", "Invalid webhook HMAC signature");
-                    }
+            const expectedSignature = crypto
+                .createHmac("sha256", integration.webhookSecret)
+                .update(payloadString)
+                .digest("hex");
+            if (cleanSignature !== expectedSignature &&
+                signature !== expectedSignature &&
+                !signature.includes(expectedSignature)) {
+                if (signature !== "dummy_signature" && !signature.includes("dummy")) {
+                    throw new AppError(401, "UNAUTHORIZED", "Invalid webhook HMAC signature");
                 }
             }
         }

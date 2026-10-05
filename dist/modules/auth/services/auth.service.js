@@ -14,10 +14,10 @@ export class AuthService {
     /**
      * Log in a user by verifying their credentials and starting an active session.
      */
-    async login(email, password, ipAddress, deviceInfo) {
-        const user = await this.userRepository.findByEmail(email);
+    async login(identifier, password, ipAddress, deviceInfo) {
+        const user = await this.userRepository.findByIdentifier(identifier);
         if (!user) {
-            throw new AppError(401, "UNAUTHORIZED", "Invalid email or password");
+            throw new AppError(401, "UNAUTHORIZED", "Invalid credentials");
         }
         // Check if organization is suspended
         const org = await Organization.findById(user.organizationId);
@@ -39,7 +39,7 @@ export class AuthService {
                 await this.userRepository.lockAccount(user._id, lockedUntil);
                 throw new AppError(403, "FORBIDDEN", "Account locked due to 5 consecutive failed login attempts. Try again in 15 minutes.");
             }
-            throw new AppError(401, "UNAUTHORIZED", "Invalid email or password");
+            throw new AppError(401, "UNAUTHORIZED", "Invalid credentials");
         }
         // Successful login - reset login failures and lock
         await this.userRepository.resetFailedLogin(user._id);
@@ -172,15 +172,19 @@ export class AuthService {
             "security.passwordResetToken": hashedToken,
             "security.passwordResetExpires": expires,
         });
+        if (!user || !user.auth?.email) {
+            return;
+        }
+        const userEmail = user.auth.email;
         // Send email using organization email integration if configured
         try {
             const { OrganizationIntegrationService } = await import("../../integrations/services/organization-integration.service.js");
             const integrationService = new OrganizationIntegrationService();
             const activeEmail = await integrationService.getActiveEmailClient(user.organizationId);
-            await activeEmail.service.sendPasswordResetEmail(activeEmail.config, activeEmail.secrets, user.auth.email, rawToken);
+            await activeEmail.service.sendPasswordResetEmail(activeEmail.config, activeEmail.secrets, userEmail, rawToken);
         }
         catch {
-            await emailService.sendPasswordResetEmail(user.auth.email, rawToken);
+            await emailService.sendPasswordResetEmail(userEmail, rawToken);
         }
     }
     /**

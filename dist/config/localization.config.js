@@ -12,17 +12,48 @@
  *   5. Create /public/locales/{code}/ resource files (frontend)
  *   6. No code changes anywhere else.
  */
-export const SUPPORTED_LOCALES = ["en", "si", "ta", "fi"];
+export const SUPPORTED_LOCALES = [
+    "en",
+    "es",
+    "fr",
+    "de",
+    "ar",
+    "he",
+    "ur",
+    "vi",
+    "hi",
+    "si",
+    "ta",
+    "fi",
+    "pt",
+    "zh",
+    "tl",
+    "pl",
+    "uk",
+];
 export const DEFAULT_LOCALE = "en";
 export const FALLBACK_LOCALE = "en";
 /** Locales whose scripts are written right-to-left */
-export const RTL_LOCALES = new Set([]);
+export const RTL_LOCALES = new Set(["ar", "he", "ur"]);
 /** Human-readable display names for the language switcher */
 export const LOCALE_DISPLAY_NAMES = {
     en: "English",
+    es: "Español",
+    fr: "Français",
+    de: "Deutsch",
+    ar: "العربية",
+    he: "עברית",
+    ur: "اردو",
+    vi: "Tiếng Việt",
+    hi: "हिन्दी",
     si: "සිංහල",
     ta: "தமிழ்",
     fi: "Suomi",
+    pt: "Português",
+    zh: "中文",
+    tl: "Tagalog",
+    pl: "Polski",
+    uk: "Українська",
 };
 /**
  * Region variants accepted in Accept-Language headers.

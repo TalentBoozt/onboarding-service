@@ -5,6 +5,7 @@ export async function certificateRoutes(app) {
     // Public verification endpoints
     app.get("/public/:id", controller.getPublicCertificate);
     app.get("/verify/:id", controller.getPublicCertificate);
+    app.get("/:id", controller.getPublicCertificate);
     // Authenticated employee endpoints
     app.register(async (authApp) => {
         authApp.addHook("preHandler", authenticate);

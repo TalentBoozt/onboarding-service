@@ -12,6 +12,9 @@ export const KIOSK_STEP_TYPES = [
     "countdown_step",
     "emergency_step",
     "info_step",
+    "ppe_checklist",
+    "knowledge_quiz",
+    "supervisor_gate",
     "completion"
 ];
 /**
@@ -24,7 +27,9 @@ export const KIOSK_INTERACTION_TYPES = [
     "yes_no",
     "hotspot",
     "swipe",
-    "ppe_checklist"
+    "ppe_checklist",
+    "quiz",
+    "supervisor_witness"
 ];
 /**
  * Maximum steps allowed in a single Kiosk Journey to respect MongoDB size boundaries.

@@ -1,7 +1,7 @@
 import FeatureFlag from "../models/feature-flag.model.js";
 export class FeatureFlagService {
     static cache = new Map();
-    static CACHE_TTL_MS = 60 * 1000; // 60 seconds
+    static CACHE_TTL_MS = process.env.NODE_ENV === "test" || process.env.VITEST ? 0 : 60 * 1000; // 60 seconds (0 in tests)
     /**
      * Deterministic string hash function returning 0..99
      */
