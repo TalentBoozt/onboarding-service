@@ -22,5 +22,11 @@ const SystemJobSchema = new Schema({
 SystemJobSchema.index({ status: 1, availableAt: 1, lockedAt: 1 });
 // Idempotency uniqueness index per organization
 SystemJobSchema.index({ organizationId: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
+// TTL index to automatically purge completed background jobs after 7 days
+SystemJobSchema.index({ completedAt: 1 }, {
+    name: "system_jobs_completedAt_ttl",
+    expireAfterSeconds: 7 * 24 * 60 * 60,
+    partialFilterExpression: { status: "completed" },
+});
 export const SystemJob = mongoose.model("SystemJob", SystemJobSchema, "system_jobs");
 export default SystemJob;

@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { featureTelemetryService } from "../services/feature-telemetry.service.js";
 export class SuperAdminController {
     superAdminService;
@@ -601,6 +603,75 @@ export class SuperAdminController {
             message: "Platform settings updated successfully",
             data,
         });
+    };
+    getDatabaseStorageObservability = async (_request, reply) => {
+        const data = await this.superAdminService.getDatabaseStorageObservability();
+        return reply.status(200).send({
+            success: true,
+            message: "Database storage observability retrieved successfully",
+            data,
+        });
+    };
+    previewDatabasePurge = async (request, reply) => {
+        const { collectionName } = request.params;
+        const { olderThanDays, orgId } = request.query;
+        const data = await this.superAdminService.previewDatabasePurge(collectionName, olderThanDays ? parseInt(olderThanDays, 10) : undefined, orgId);
+        return reply.status(200).send({
+            success: true,
+            message: "Purge preview calculated successfully",
+            data,
+        });
+    };
+    createDatabaseBackup = async (request, reply) => {
+        const actorUserId = request.user?.userId;
+        const actorEmail = request.user?.email;
+        const { collectionName, olderThanDays, orgId, maxDocuments } = request.body;
+        const data = await this.superAdminService.createDatabaseBackup(collectionName, olderThanDays ?? 30, actorUserId, actorEmail, orgId, maxDocuments);
+        return reply.status(201).send({
+            success: true,
+            message: "Verified backup archive created successfully",
+            data,
+        });
+    };
+    executeDatabasePurge = async (request, reply) => {
+        const actorUserId = request.user?.userId;
+        const { manifestId, confirmationText } = request.body;
+        const data = await this.superAdminService.executeDatabasePurge(manifestId, actorUserId, confirmationText);
+        return reply.status(200).send({
+            success: true,
+            message: "Bounded purge executed successfully",
+            data,
+        });
+    };
+    restoreDatabaseFromBackup = async (request, reply) => {
+        const actorUserId = request.user?.userId;
+        const { manifestId } = request.body;
+        const data = await this.superAdminService.restoreDatabaseFromBackup(manifestId, actorUserId);
+        return reply.status(200).send({
+            success: true,
+            message: "Database records restored successfully from backup",
+            data,
+        });
+    };
+    listDatabaseBackups = async (_request, reply) => {
+        const data = await this.superAdminService.listDatabaseBackups();
+        return reply.status(200).send({
+            success: true,
+            message: "Database backup manifests retrieved successfully",
+            data,
+        });
+    };
+    downloadDatabaseBackup = async (request, reply) => {
+        const { manifestId } = request.params;
+        const manifest = await this.superAdminService.getBackupManifest(manifestId);
+        if (!manifest || !manifest.archiveFilePath || !fs.existsSync(manifest.archiveFilePath)) {
+            return reply.status(404).send({ success: false, message: "Backup archive not found" });
+        }
+        const stream = fs.createReadStream(manifest.archiveFilePath);
+        const filename = path.basename(manifest.archiveFilePath);
+        reply.header("Content-Type", "application/gzip");
+        reply.header("Content-Disposition", `attachment; filename="${filename}"`);
+        return reply.send(stream);
     };
 }
 export default SuperAdminController;

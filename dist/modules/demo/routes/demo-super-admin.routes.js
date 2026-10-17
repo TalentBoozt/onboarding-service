@@ -15,9 +15,14 @@ export async function demoSuperAdminRoutes(app) {
     app.get("/users", demoSuperAdminController.getUsers);
     app.post("/users", demoSuperAdminController.createUser);
     app.patch("/users/:id", demoSuperAdminController.updateUser);
+    // Time-Limited Signed Invites
+    app.post("/invites", demoSuperAdminController.createInvite);
     // Live Sessions & Termination
     app.get("/sessions", demoSuperAdminController.getSessions);
     app.post("/sessions/:sessionId/terminate", demoSuperAdminController.terminateSession);
+    app.delete("/sessions/:sessionId", demoSuperAdminController.terminateSession);
+    app.delete("/sessions/:sessionId/terminate", demoSuperAdminController.terminateSession);
+    app.post("/sessions/:sessionId/freeze", demoSuperAdminController.freezeSession);
     // Activity Explorer & Suspicious Signals
     app.get("/activity", demoSuperAdminController.getActivityLogs);
     app.get("/risk-alerts", demoSuperAdminController.getRiskAlerts);

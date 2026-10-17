@@ -10,6 +10,7 @@ import onboardingCaseService from "../../onboarding/services/onboarding-case.ser
 import OutboxEvent from "../../onboarding/models/outbox-event.model.js";
 import roleChecklistService from "../../tasks/services/role-checklist.service.js";
 import OrganizationIntegrationService from "../../integrations/services/organization-integration.service.js";
+export const DEFAULT_EMPLOYEE_TEMPORARY_PASSWORD = process.env.DEFAULT_EMPLOYEE_PASSWORD || "Password@123!";
 export class EmployeeService {
     employeeRepository;
     integrationService = new OrganizationIntegrationService();
@@ -637,7 +638,7 @@ export class EmployeeService {
             organizationId: new mongoose.Types.ObjectId(orgId),
             isDeleted: { $ne: true },
         });
-        const defaultPasswordHash = await hashPassword("Password@123!");
+        const defaultPasswordHash = await hashPassword(DEFAULT_EMPLOYEE_TEMPORARY_PASSWORD);
         const shouldTriggerWorkflows = options?.triggerWorkflows !== false;
         // Verify active email configuration if invitations are requested
         let activeEmailClient = null;
@@ -1086,7 +1087,7 @@ export class EmployeeService {
         return {
             ...results,
             defaultCredentials: {
-                temporaryPassword: "Password@123!",
+                temporaryPassword: DEFAULT_EMPLOYEE_TEMPORARY_PASSWORD,
                 mustChangePassword: true,
                 loginUrl: "/login",
             },

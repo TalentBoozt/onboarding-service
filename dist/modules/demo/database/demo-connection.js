@@ -25,7 +25,7 @@ export function getDemoConnection(log = console) {
     log.info?.("🔌 Initializing isolated Demo Database connection...") || console.log("🔌 Initializing isolated Demo Database connection...");
     demoConnectionInstance = mongoose.createConnection(demoUri, {
         autoIndex: true,
-        serverSelectionTimeoutMS: 15000,
+        serverSelectionTimeoutMS: 30000,
     });
     demoConnectionInstance.on("connected", () => {
         log.info?.("✅ Demo Database connected successfully.") || console.log("✅ Demo Database connected successfully.");
@@ -37,6 +37,16 @@ export function getDemoConnection(log = console) {
         log.warn?.("⚠️ Demo Database disconnected.") || console.warn("⚠️ Demo Database disconnected.");
     });
     return demoConnectionInstance;
+}
+/**
+ * Ensures the isolated demo connection is fully established before executing queries.
+ */
+export async function waitForDemoConnection(log = console) {
+    const conn = getDemoConnection(log);
+    if (conn.readyState === 1) {
+        return conn;
+    }
+    return await conn.asPromise();
 }
 /**
  * Closes the isolated Demo Database connection.

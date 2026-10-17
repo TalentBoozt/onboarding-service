@@ -26,5 +26,11 @@ const OutboxEventSchema = new Schema({
 }, { timestamps: true });
 OutboxEventSchema.index({ status: 1, availableAt: 1, lockedAt: 1 });
 OutboxEventSchema.index({ aggregateId: 1, eventName: 1, correlationId: 1 }, { unique: true });
+// TTL index to automatically purge published outbox events after 7 days
+OutboxEventSchema.index({ publishedAt: 1 }, {
+    name: "outbox_events_published_ttl",
+    expireAfterSeconds: 7 * 24 * 60 * 60,
+    partialFilterExpression: { status: "published" },
+});
 export const OutboxEvent = mongoose.model("OutboxEvent", OutboxEventSchema, "outbox_events");
 export default OutboxEvent;
