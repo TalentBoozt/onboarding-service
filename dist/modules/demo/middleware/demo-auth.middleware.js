@@ -20,8 +20,16 @@ export async function demoAuthenticate(request, _reply) {
         if (!payload || !payload.isDemo || !payload.sessionId) {
             throw new AppError(401, "INVALID_DEMO_TOKEN", "Token is not a valid demo session credential.");
         }
-        // Validate active session in isolated demo database
-        await demoSessionService.validateSession(payload.sessionId, getClientIp(request));
+        // For heartbeat endpoint, allow revoked/frozen sessions to reach handler so it can deliver kill switch command
+        const isHeartbeat = request.url.includes("/auth/heartbeat");
+        try {
+            await demoSessionService.validateSession(payload.sessionId, getClientIp(request));
+        }
+        catch (err) {
+            if (!isHeartbeat) {
+                throw err;
+            }
+        }
         // Attach demo identity to request context
         request.demoUser = {
             id: payload.demoUserId,

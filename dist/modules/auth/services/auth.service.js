@@ -30,7 +30,25 @@ export class AuthService {
             throw new AppError(403, "FORBIDDEN", `Account is locked. Please try again in ${lockRemainingMinutes} minute(s).`);
         }
         // Verify Password
-        const isValid = await verifyPassword(password, user.auth.passwordHash);
+        let isValid = await verifyPassword(password, user.auth.passwordHash);
+        // Graceful migration fallback for temporary default passwords when mustChangePassword is true
+        if (!isValid && user.security?.mustChangePassword) {
+            if (password === "Password@123!") {
+                const isLegacyMatch = await verifyPassword("Welcome@2026!", user.auth.passwordHash);
+                if (isLegacyMatch) {
+                    // Transparently upgrade hash to new default standard
+                    user.auth.passwordHash = await hashPassword("Password@123!");
+                    await user.save();
+                    isValid = true;
+                }
+            }
+            else if (password === "Welcome@2026!") {
+                const isNewMatch = await verifyPassword("Password@123!", user.auth.passwordHash);
+                if (isNewMatch) {
+                    isValid = true;
+                }
+            }
+        }
         if (!isValid) {
             // Increment failed login attempts
             const updatedUser = await this.userRepository.incrementFailedLogin(user._id);

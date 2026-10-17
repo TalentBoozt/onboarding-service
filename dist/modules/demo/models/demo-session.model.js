@@ -9,9 +9,13 @@ const DemoSessionSchema = new Schema({
     deviceInfo: { type: String },
     userAgent: { type: String },
     isValid: { type: Boolean, default: true },
+    killCommand: {
+        type: String,
+        enum: ["TERMINATE", "FREEZE", "CONTINUE"],
+    },
     riskStatus: {
         type: String,
-        enum: ["NORMAL", "SUSPICIOUS", "HIGH_RISK", "BLOCKED"],
+        enum: ["NORMAL", "SUSPICIOUS", "HIGH_RISK", "BLOCKED", "CRITICAL"],
         default: "NORMAL",
     },
     suspiciousReason: { type: String },
