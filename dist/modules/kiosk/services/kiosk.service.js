@@ -2786,6 +2786,25 @@ export class KioskService {
             }
             // 4. Dispatch outbound HTTP webhook if configured
             if (webhookUrl) {
+                const isLocalhost = webhookUrl.includes("127.0.0.1") || webhookUrl.includes("localhost");
+                if (process.env.NODE_ENV === "production" && isLocalhost && process.env.ALLOW_LOCAL_WEBHOOKS !== "true") {
+                    try {
+                        await Organization.findByIdAndUpdate(orgIdObj, {
+                            $unset: {
+                                "integrations.kioskAlertWebhookUrl": "",
+                                "integrations.webhookUrl": "",
+                                "kioskSettings.alertWebhookUrl": "",
+                                "kioskSettings.webhookUrl": "",
+                                alertWebhookUrl: "",
+                            },
+                        });
+                        console.log(`[KioskService] Automatically unset invalid loopback webhook URL (${webhookUrl}) for organization ${orgIdObj}`);
+                    }
+                    catch {
+                        // Fail silently
+                    }
+                    return;
+                }
                 const webhookPayload = {
                     event: "kiosk_fleet_alert",
                     alertType: params.alertType,
@@ -2816,7 +2835,8 @@ export class KioskService {
                     });
                 }
                 catch (fetchErr) {
-                    console.warn(`[KioskService] Failed to dispatch alert webhook to ${webhookUrl}:`, fetchErr);
+                    const errMsg = fetchErr?.cause?.message || fetchErr?.message || String(fetchErr);
+                    console.warn(`[KioskService] Failed to dispatch alert webhook to ${webhookUrl}: ${errMsg}`);
                 }
                 // Record a webhook channel notification record for auditability
                 if (targetAdmins.length > 0) {
@@ -3803,6 +3823,51 @@ export class KioskService {
             timestamp: new Date().toISOString(),
             message: "Test webhook dispatch from Talnova Kiosk Platform",
         });
+    }
+    /**
+     * One-time or startup cleanup for orphaned test artifacts that may have been left by tests
+     */
+    static async cleanOrphanedTestArtifacts(logger) {
+        try {
+            const orgRes = await Organization.deleteMany({
+                $or: [
+                    { slug: /^sentinel-plant-/ },
+                    { name: /^Sentinel Test Plant/ },
+                ],
+            });
+            const devRes = await KioskDeviceModel.deleteMany({
+                deviceId: /^HW-(STALE|FRESH|TABLET|LATENCY|NORMAL)/,
+            });
+            const unsetRes = await Organization.updateMany({
+                $or: [
+                    { "integrations.kioskAlertWebhookUrl": /127\.0\.0\.1|localhost/ },
+                    { "integrations.webhookUrl": /127\.0\.0\.1|localhost/ },
+                    { "kioskSettings.alertWebhookUrl": /127\.0\.0\.1|localhost/ },
+                    { "kioskSettings.webhookUrl": /127\.0\.0\.1|localhost/ },
+                    { alertWebhookUrl: /127\.0\.0\.1|localhost/ },
+                ],
+            }, {
+                $unset: {
+                    "integrations.kioskAlertWebhookUrl": "",
+                    "integrations.webhookUrl": "",
+                    "kioskSettings.alertWebhookUrl": "",
+                    "kioskSettings.webhookUrl": "",
+                    alertWebhookUrl: "",
+                },
+            });
+            if (orgRes.deletedCount > 0 || devRes.deletedCount > 0 || unsetRes.modifiedCount > 0) {
+                logger?.info?.(`[KioskService] Cleaned up orphaned test artifacts: ${orgRes.deletedCount} orgs, ${devRes.deletedCount} devices, ${unsetRes.modifiedCount} loopback webhooks unset.`);
+            }
+            return {
+                deletedOrgs: orgRes.deletedCount,
+                deletedDevices: devRes.deletedCount,
+                unsetWebhooks: unsetRes.modifiedCount,
+            };
+        }
+        catch (err) {
+            logger?.warn?.("[KioskService] Error cleaning up test artifacts:", err);
+            return { deletedOrgs: 0, deletedDevices: 0, unsetWebhooks: 0 };
+        }
     }
 }
 export default KioskService;
