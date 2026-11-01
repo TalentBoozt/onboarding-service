@@ -2,6 +2,7 @@ import AppError from "../../../common/errors/app-error.js";
 import { verifyPassword, hashPassword } from "../../../utils/crypto.js";
 import crypto from "crypto";
 import { Organization } from "../../organizations/models/organization.model.js";
+import SessionBlocklistCache from "../../../infrastructure/cache/session-blocklist.cache.js";
 export class AuthService {
     userRepository;
     sessionRepository;
@@ -171,6 +172,7 @@ export class AuthService {
      */
     async logout(sessionId) {
         await this.sessionRepository.invalidateSession(sessionId);
+        await SessionBlocklistCache.revokeSession(sessionId);
     }
     /**
      * Generates a password reset token, saves it, and dispatches a reset email.
@@ -230,6 +232,9 @@ export class AuthService {
      * Changes the user's password (e.g., during mandatory first login or profile update).
      */
     async changePassword(userId, currentPassword, newPassword) {
+        if (!currentPassword || currentPassword.trim().length === 0) {
+            throw new AppError(400, "BAD_REQUEST", "Current password is required.");
+        }
         if (!newPassword || newPassword.trim().length < 8) {
             throw new AppError(400, "BAD_REQUEST", "New password must be at least 8 characters long.");
         }
@@ -237,12 +242,10 @@ export class AuthService {
         if (!user) {
             throw new AppError(404, "NOT_FOUND", "User account not found.");
         }
-        // If current password was provided, verify it
-        if (currentPassword) {
-            const isValid = await verifyPassword(currentPassword, user.auth.passwordHash);
-            if (!isValid) {
-                throw new AppError(400, "INVALID_CREDENTIALS", "Current password does not match.");
-            }
+        // Always verify current password
+        const isValid = await verifyPassword(currentPassword, user.auth.passwordHash);
+        if (!isValid) {
+            throw new AppError(400, "INVALID_CREDENTIALS", "Current password does not match.");
         }
         // Verify new password is not identical to existing
         const isSame = await verifyPassword(newPassword, user.auth.passwordHash);

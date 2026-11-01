@@ -37,15 +37,17 @@ export class EmployeeRepository {
         }
         const total = await User.countDocuments(query);
         const page = Math.max(1, pagination.page);
-        const limit = Math.max(1, pagination.limit);
+        const limit = Math.min(Math.max(pagination.limit || 20, 1), 100);
         const skip = (page - 1) * limit;
         const sortField = pagination.sortBy || "createdAt";
         const sortOrder = pagination.sortOrder === "asc" ? 1 : -1;
         const employees = await User.find(query)
+            .select("_id organizationId auth.email auth.emailVerified profile employment permissions preferences createdAt updatedAt")
             .sort({ [sortField]: sortOrder })
             .skip(skip)
-            .limit(limit);
-        return { employees, total };
+            .limit(limit)
+            .lean();
+        return { employees: employees, total };
     }
     async create(employeeData) {
         const user = new User(employeeData);

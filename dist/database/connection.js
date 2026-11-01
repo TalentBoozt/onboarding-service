@@ -49,9 +49,17 @@ export async function connectDatabase(log = console) {
         });
     });
     try {
+        const isProduction = process.env.NODE_ENV === "production";
         await mongoose.connect(dbConfig.uri, {
-            autoIndex: true, // Auto-build indexes in development; might disable in production later if needed
+            autoIndex: !isProduction, // Disable expensive schema auto-indexing in production
+            maxPoolSize: 20, // Bound connection pool to 20 sockets to reduce RAM consumption
+            minPoolSize: 2, // Keep 2 warm connections for instant response
+            serverSelectionTimeoutMS: 5000, // Timeout fast after 5s rather than stalling for 30s
+            socketTimeoutMS: 25000, // Cleanly close idle / hung sockets after 25s
         });
+        // Ensure high-concurrency multi-tenant compound indexes
+        const { ensureMultiTenantIndexes } = await import("./indexes.js");
+        await ensureMultiTenantIndexes(log);
         // Hydrate TenantStatusCache with currently suspended organizations
         await TenantStatusCache.init();
     }

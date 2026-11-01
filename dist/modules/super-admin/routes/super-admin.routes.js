@@ -1,4 +1,5 @@
 import { authenticate, requireRole } from "../../../middleware/auth.middleware.js";
+import { requireSudoMode } from "../../../middleware/sudo.middleware.js";
 import { SuperAdminService } from "../services/super-admin.service.js";
 import { SuperAdminController } from "../controllers/super-admin.controller.js";
 export async function superAdminRoutes(app) {
@@ -13,6 +14,9 @@ export async function superAdminRoutes(app) {
     app.get("/analytics/feature-adoption", controller.getFeatureAdoption);
     app.get("/activity-logs", controller.getActivityLogs);
     app.get("/stats", controller.getStats);
+    // 1.1 Sudo Elevation & Step-Up Authentication
+    app.post("/sudo/verify", controller.verifySudoMode);
+    app.get("/sudo/status", controller.getSudoStatus);
     // 2. Organizations
     app.get("/organizations", controller.getOrganizations);
     app.post("/organizations", controller.createOrganization);
@@ -21,7 +25,7 @@ export async function superAdminRoutes(app) {
     app.get("/organizations/:id/360", controller.getOrganization360);
     app.post("/organizations/:id/quarantine", controller.quarantineOrganization);
     app.post("/organizations/:id/activate", controller.activateOrganization);
-    app.delete("/organizations/:id", controller.deleteOrganization);
+    app.delete("/organizations/:id", { preHandler: [requireSudoMode] }, controller.deleteOrganization);
     app.post("/organizations/:id/restore", controller.restoreOrganization);
     app.get("/organizations/:id/flags", controller.getOrganizationFlags);
     app.patch("/organizations/:id/flags/:key", controller.updateOrganizationFlag);
@@ -59,10 +63,10 @@ export async function superAdminRoutes(app) {
     app.get("/observability/database-storage", controller.getDatabaseStorageObservability);
     app.get("/observability/database-storage/preview/:collectionName", controller.previewDatabasePurge);
     app.post("/observability/database-storage/backup", controller.createDatabaseBackup);
-    app.post("/observability/database-storage/purge", controller.executeDatabasePurge);
-    app.post("/observability/database-storage/restore", controller.restoreDatabaseFromBackup);
+    app.post("/observability/database-storage/purge", { preHandler: [requireSudoMode] }, controller.executeDatabasePurge);
+    app.post("/observability/database-storage/restore", { preHandler: [requireSudoMode] }, controller.restoreDatabaseFromBackup);
     app.get("/observability/database-storage/backups", controller.listDatabaseBackups);
-    app.get("/observability/database-storage/backups/:manifestId/download", controller.downloadDatabaseBackup);
+    app.get("/observability/database-storage/backups/:manifestId/download", { preHandler: [requireSudoMode] }, controller.downloadDatabaseBackup);
     app.patch("/organizations/:id/storage-limit", controller.updateOrganizationStorageLimit);
     app.post("/organizations/:id/assign-package", controller.assignOrganizationPackage);
     // 5.1 Packages, Plans & Modular Entitlements

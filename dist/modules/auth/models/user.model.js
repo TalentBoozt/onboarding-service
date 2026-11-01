@@ -88,6 +88,7 @@ const UserSchema = new Schema({
         passwordResetExpires: { type: Date },
         supervisorPinHash: { type: String },
         mustChangePassword: { type: Boolean, default: false },
+        lastSudoVerifiedAt: { type: Date },
     },
     compliance: {
         legalHold: { type: Boolean, default: false },
@@ -187,6 +188,7 @@ UserSchema.index({ organizationId: 1, "auth.email": 1 }, { partialFilterExpressi
 UserSchema.index({ organizationId: 1, "employment.employeeId": 1 }, { unique: true, partialFilterExpression: { "employment.employeeId": { $type: "string" } } });
 UserSchema.index({ organizationId: 1, "profile.phone": 1 }, { partialFilterExpression: { "profile.phone": { $type: "string" } } });
 UserSchema.index({ organizationId: 1, "permissions.role": 1 });
+UserSchema.index({ organizationId: 1, "employment.status": 1, "profile.lastName": 1 });
 UserSchema.index({ organizationId: 1, "employment.badgeId": 1 }, { sparse: true });
 UserSchema.index({ organizationId: 1, "employment.nationalId": 1 }, { sparse: true });
 // Single-field indexes for instant sub-10ms kiosk badge, phone, and employee lookups (K-ENT-001)

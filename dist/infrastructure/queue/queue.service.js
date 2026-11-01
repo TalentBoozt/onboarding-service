@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import SystemJob from "./system-job.model.js";
+import SystemLogBuffer from "../telemetry/system-log-buffer.js";
 export class QueueService {
     static instance;
     jobHandlers = new Map();
@@ -101,11 +102,19 @@ export class QueueService {
             const [job] = this.jobQueue.splice(readyIndex, 1);
             const handler = this.jobHandlers.get(job.name);
             if (!handler) {
-                // console.error(`[QueueService] No registered handler for job: ${job.name}`);
                 job.status = "failed";
                 job.lastError = `No handler registered for ${job.name}`;
                 job.updatedAt = new Date();
                 this.failedJobs.push(job);
+                SystemLogBuffer.record({
+                    level: "critical",
+                    source: "worker",
+                    eventType: "UNHANDLED_JOB_ERROR",
+                    action: "job_handler_missing",
+                    organizationId: job.options.organizationId?.toString(),
+                    description: `No handler registered for job: ${job.name}`,
+                    metadata: { jobId: job.id, jobName: job.name },
+                });
                 if (mongoose.connection.readyState === 1 && mongoose.Types.ObjectId.isValid(job.id)) {
                     SystemJob.updateOne({ _id: new mongoose.Types.ObjectId(job.id) }, { $set: { status: "failed", lastError: job.lastError } }).catch(() => { });
                 }
@@ -125,6 +134,9 @@ export class QueueService {
                 job.status = "completed";
                 job.updatedAt = new Date();
                 this.completedJobs.push(job);
+                if (this.completedJobs.length > 100) {
+                    this.completedJobs.shift();
+                }
                 if (mongoose.connection.readyState === 1 && mongoose.Types.ObjectId.isValid(job.id)) {
                     await SystemJob.updateOne({ _id: new mongoose.Types.ObjectId(job.id) }, {
                         $set: {
@@ -158,12 +170,26 @@ export class QueueService {
                     this.jobQueue.push(job);
                 }
                 else {
-                    // console.error(
-                    //   `[QueueService] Job ${job.name} (${job.id}) failed permanently after ${job.attempts} attempts:`,
-                    //   error
-                    // );
                     job.status = "failed";
                     this.failedJobs.push(job);
+                    if (this.failedJobs.length > 100) {
+                        this.failedJobs.shift();
+                    }
+                    SystemLogBuffer.record({
+                        level: "critical",
+                        source: "worker",
+                        eventType: "DEAD_LETTER_JOB_FAILED",
+                        action: "dead_letter",
+                        organizationId: job.options.organizationId?.toString(),
+                        description: `Job ${job.name} (${job.id}) exhausted ${job.attempts} retries and failed permanently: ${job.lastError}`,
+                        metadata: {
+                            jobId: job.id,
+                            jobName: job.name,
+                            attempts: job.attempts,
+                            maxRetries: job.options.maxRetries || 3,
+                            lastError: job.lastError,
+                        },
+                    });
                     if (mongoose.connection.readyState === 1 && mongoose.Types.ObjectId.isValid(job.id)) {
                         SystemJob.updateOne({ _id: new mongoose.Types.ObjectId(job.id) }, {
                             $set: {

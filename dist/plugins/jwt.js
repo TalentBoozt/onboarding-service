@@ -4,7 +4,7 @@ export async function registerJwt(app) {
     await app.register(fastifyJwt, {
         secret: jwtConfig.secret,
         cookie: {
-            cookieName: "refreshToken",
+            cookieName: "accessToken",
             signed: false,
         },
         sign: {

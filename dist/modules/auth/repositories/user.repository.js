@@ -11,6 +11,18 @@ export class UserRepository {
         const clean = identifier.trim();
         if (!clean)
             return null;
+        const query = {
+            isDeleted: false,
+        };
+        if (organizationId) {
+            query.organizationId = typeof organizationId === "string" ? new mongoose.Types.ObjectId(organizationId) : organizationId;
+        }
+        // Fast-path: When input is an email address, perform an exact indexed query directly on auth.email
+        if (clean.includes("@")) {
+            query["auth.email"] = clean.toLowerCase();
+            return User.findOne(query);
+        }
+        // For non-email identifiers (e.g. Employee ID, Badge ID, Phone number):
         const escaped = clean.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const exactRegex = new RegExp(`^${escaped}$`, "i");
         const cleanDigits = clean.replace(/\D/g, "");
@@ -24,13 +36,7 @@ export class UserRepository {
         if (cleanDigits.length >= 7) {
             orConditions.push({ "profile.phone": new RegExp(`${cleanDigits}$`) });
         }
-        const query = {
-            $or: orConditions,
-            isDeleted: false,
-        };
-        if (organizationId) {
-            query.organizationId = typeof organizationId === "string" ? new mongoose.Types.ObjectId(organizationId) : organizationId;
-        }
+        query.$or = orConditions;
         return User.findOne(query);
     }
     async findById(id) {

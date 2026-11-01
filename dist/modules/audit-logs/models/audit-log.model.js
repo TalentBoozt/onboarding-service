@@ -24,6 +24,7 @@ const AuditLogSchema = new Schema({
             "admin",
             "feature_flag",
             "kiosk",
+            "sales",
         ],
         required: true,
     },

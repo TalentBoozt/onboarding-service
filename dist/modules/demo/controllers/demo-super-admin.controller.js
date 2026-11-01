@@ -220,7 +220,7 @@ export class DemoSuperAdminController {
         const inviteToken = request.server.jwt.sign(invitePayload, {
             expiresIn: `${durationHours}h`,
         });
-        const baseUrl = process.env.DEMO_FRONTEND_URL || "https://demo.talnova.com";
+        const baseUrl = process.env.DEMO_FRONTEND_URL || "https://demo.talnovaonboard.com";
         const inviteUrl = `${baseUrl}/invite?token=${inviteToken}`;
         const DemoActivityLog = getDemoActivityLogModel();
         await DemoActivityLog.create({

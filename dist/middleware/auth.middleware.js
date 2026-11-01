@@ -1,18 +1,25 @@
 import AppError from "../common/errors/app-error.js";
 import Organization from "../modules/organizations/models/organization.model.js";
 import TenantStatusCache from "../infrastructure/cache/tenant-status.cache.js";
+import SessionBlocklistCache from "../infrastructure/cache/session-blocklist.cache.js";
 import FeatureFlagService from "../modules/super-admin/services/feature-flag.service.js";
 /**
  * Global authentication hook that verifies the JWT access token.
+ * Supports dual transport: Authorization: Bearer <token> header OR accessToken HttpOnly cookie.
+ * Validates against the distributed session revocation blocklist and tenant suspension cache.
  */
 export async function authenticate(request, reply) {
-    if (request.url.includes("/public/verify")) {
-        return;
-    }
     try {
         await request.jwtVerify();
-        // Check if organization is suspended via in-memory cache (<5ms)
         const user = request.user;
+        // Check distributed session revocation blocklist
+        if (user?.sessionId) {
+            const isRevoked = await SessionBlocklistCache.isSessionRevoked(user.sessionId);
+            if (isRevoked) {
+                throw new AppError(401, "SESSION_REVOKED", "Session has been terminated or revoked. Please sign in again.");
+            }
+        }
+        // Check if organization is suspended via in-memory cache (<5ms)
         if (user && user.organizationId && user.role !== "super_admin") {
             const orgIdStr = user.organizationId.toString();
             let isSuspended = TenantStatusCache.isSuspended(orgIdStr);
@@ -38,13 +45,21 @@ export async function authenticate(request, reply) {
 }
 /**
  * Optional authentication hook that parses the JWT token if available, but doesn't block guests.
+ * Supports dual transport: Authorization header OR accessToken cookie.
  */
 export async function optionalAuthenticate(request, reply) {
     try {
-        const authHeader = request.headers.authorization;
-        if (authHeader) {
+        const hasToken = !!request.headers.authorization || !!request.cookies?.accessToken;
+        if (hasToken) {
             await request.jwtVerify();
             const user = request.user;
+            if (user?.sessionId) {
+                const isRevoked = await SessionBlocklistCache.isSessionRevoked(user.sessionId);
+                if (isRevoked) {
+                    request.user = undefined;
+                    return;
+                }
+            }
             if (user && user.organizationId && user.role !== "super_admin") {
                 const orgIdStr = user.organizationId.toString();
                 let isSuspended = TenantStatusCache.isSuspended(orgIdStr);
