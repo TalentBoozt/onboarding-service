@@ -1,14 +1,18 @@
 import { scimController } from "../controllers/scim.controller.js";
 export async function scimRoutes(app) {
-    // SCIM 2.0 Discovery
+    const requireScimAuth = async (request, _reply) => {
+        const orgId = await scimController.resolveOrgId(request);
+        request.scimOrgId = orgId;
+    };
+    // SCIM 2.0 Discovery (Public per RFC 7644 Section 4)
     app.get("/ServiceProviderConfig", scimController.getServiceProviderConfig);
     app.get("/ResourceTypes", scimController.getResourceTypes);
-    // SCIM 2.0 User Provisioning (RFC 7644)
-    app.post("/Users", scimController.createUser);
-    app.get("/Users", scimController.listUsers);
-    app.get("/Users/:id", scimController.getUser);
-    app.put("/Users/:id", scimController.updateUser);
-    app.patch("/Users/:id", scimController.patchUser);
-    app.delete("/Users/:id", scimController.deleteUser);
+    // SCIM 2.0 User Provisioning (RFC 7644) - Protected by SCIM Bearer authentication
+    app.post("/Users", { preHandler: [requireScimAuth] }, scimController.createUser);
+    app.get("/Users", { preHandler: [requireScimAuth] }, scimController.listUsers);
+    app.get("/Users/:id", { preHandler: [requireScimAuth] }, scimController.getUser);
+    app.put("/Users/:id", { preHandler: [requireScimAuth] }, scimController.updateUser);
+    app.patch("/Users/:id", { preHandler: [requireScimAuth] }, scimController.patchUser);
+    app.delete("/Users/:id", { preHandler: [requireScimAuth] }, scimController.deleteUser);
 }
 export default scimRoutes;

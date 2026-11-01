@@ -1,14 +1,15 @@
 import { AIAssistantController } from "../controllers/ai-assistant.controller.js";
 import { AIAssistantService } from "../services/ai-assistant.service.js";
 import { authenticate, requireRole, requireFeatureFlag } from "../../../middleware/auth.middleware.js";
+import { aiRateLimit } from "../../../plugins/rate-limit.js";
 export async function aiAssistantRoutes(app) {
     const service = new AIAssistantService();
     const controller = new AIAssistantController(service);
     // Authenticate all routes
     app.addHook("preHandler", authenticate);
     // POST /api/v1/ai/chat & POST /api/v1/ai/query
-    app.post("/chat", controller.chat);
-    app.post("/query", controller.chat);
+    app.post("/chat", { config: { rateLimit: aiRateLimit } }, controller.chat);
+    app.post("/query", { config: { rateLimit: aiRateLimit } }, controller.chat);
     // GET /api/v1/ai/conversations
     app.get("/conversations", controller.getConversations);
     // GET /api/v1/ai/conversations/:id

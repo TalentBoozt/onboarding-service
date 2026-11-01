@@ -63,9 +63,10 @@ export class JourneyController {
             filter.status = "published";
             filter.isPublic = true;
         }
+        const parsedLimit = Math.min(Math.max(parseInt(query.limit, 10) || 20, 1), 100);
         const pagination = {
-            page: query.page ? parseInt(query.page, 10) : 1,
-            limit: query.limit ? parseInt(query.limit, 10) : 20,
+            page: Math.max(parseInt(query.page, 10) || 1, 1),
+            limit: parsedLimit,
             sortBy: query.sortBy,
             sortOrder: query.sortOrder,
         };
@@ -78,6 +79,7 @@ export class JourneyController {
                 total: result.total,
                 page: pagination.page,
                 limit: pagination.limit,
+                totalPages: Math.ceil(result.total / pagination.limit) || 1,
             },
         });
     };

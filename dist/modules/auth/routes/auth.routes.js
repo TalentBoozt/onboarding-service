@@ -18,6 +18,7 @@ import { appConfig } from "../../../config/index.js";
 import { getClientIp } from "../../../common/utils/ip.util.js";
 import Package from "../../super-admin/models/package.model.js";
 import FeatureFlag from "../../super-admin/models/feature-flag.model.js";
+import { authRateLimit } from "../../../plugins/rate-limit.js";
 const registerSchema = z.object({
     orgName: z.string().min(1, "Organization name is required"),
     orgSlug: z.string().min(1, "Workspace slug is required"),
@@ -34,12 +35,18 @@ export async function authRoutes(app) {
     const controller = new AuthController(authService);
     // POST /api/v1/auth/login
     app.post("/login", {
+        config: {
+            rateLimit: authRateLimit,
+        },
         schema: {
             body: loginSchema,
         },
     }, controller.login);
     // POST /api/v1/auth/register
     app.post("/register", {
+        config: {
+            rateLimit: authRateLimit,
+        },
         schema: {
             body: registerSchema,
         },
@@ -249,9 +256,16 @@ export async function authRoutes(app) {
         reply.setCookie("refreshToken", refreshToken, {
             path: "/api/v1/auth",
             httpOnly: true,
-            secure: false,
+            secure: appConfig.isProduction,
             sameSite: "strict",
             maxAge: 30 * 24 * 60 * 60 * 1000,
+        });
+        reply.setCookie("accessToken", accessToken, {
+            path: "/",
+            httpOnly: true,
+            secure: appConfig.isProduction,
+            sameSite: "strict",
+            maxAge: 15 * 60 * 1000,
         });
         return reply.status(201).send({
             success: true,
@@ -337,6 +351,9 @@ export async function authRoutes(app) {
     });
     // POST /api/v1/auth/forgot-password
     app.post("/forgot-password", {
+        config: {
+            rateLimit: authRateLimit,
+        },
         schema: {
             body: forgotPasswordSchema,
         },
@@ -441,6 +458,13 @@ export async function authRoutes(app) {
             sameSite: "strict",
             maxAge: 30 * 24 * 60 * 60 * 1000,
         });
+        reply.setCookie("accessToken", accessToken, {
+            path: "/",
+            httpOnly: true,
+            secure: appConfig.isProduction,
+            sameSite: "strict",
+            maxAge: 15 * 60 * 1000,
+        });
         return reply.status(200).send({
             success: true,
             message: "Invitation accepted successfully. Account activated.",
@@ -463,7 +487,7 @@ export async function authRoutes(app) {
         preHandler: [authenticate],
         schema: {
             body: z.object({
-                currentPassword: z.string().optional(),
+                currentPassword: z.string({ required_error: "Current password is required" }).min(1, "Current password is required"),
                 newPassword: z.string().min(8, "Password must be at least 8 characters"),
             }),
         },

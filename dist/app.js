@@ -49,11 +49,16 @@ import { certificateRoutes } from "./modules/certificates/routes/certificate.rou
 import { onboardingRoutes } from "./modules/onboarding/routes/onboarding.routes.js";
 import { demoRoutes } from "./modules/demo/routes/demo.routes.js";
 import { demoSuperAdminRoutes } from "./modules/demo/routes/demo-super-admin.routes.js";
+import { salesRoutes } from "./modules/sales/routes/sales.routes.js";
 import { registerAssignmentSubscribers } from "./modules/assignments/subscribers/assignment.subscriber.js";
 import { registerEventSubscribers } from "./infrastructure/events/event-subscribers.js";
+import { registerSalesWorkers } from "./modules/sales/workers/index.js";
+import { AutomationEngineService } from "./modules/sales/services/automation-engine.service.js";
 export async function buildApp() {
     registerAssignmentSubscribers();
     registerEventSubscribers();
+    registerSalesWorkers();
+    AutomationEngineService.getInstance();
     const app = Fastify({
         logger: loggerConfig,
         disableRequestLogging: true, // Custom request/response lifecycle logging in logging.middleware.ts
@@ -131,6 +136,7 @@ export async function buildApp() {
     await app.register(onboardingRoutes, { prefix: "/api/v1/onboarding" });
     await app.register(demoRoutes, { prefix: "/api/v1/demo" });
     await app.register(demoSuperAdminRoutes, { prefix: "/api/v1/super-admin/demo" });
+    await app.register(salesRoutes, { prefix: "/api/v1/sales" });
     // Health checks
     app.get("/live", async () => {
         return { status: "alive", timestamp: new Date().toISOString() };

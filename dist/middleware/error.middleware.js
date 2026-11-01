@@ -1,5 +1,6 @@
 import { ZodError } from "zod";
 import AppError from "../common/errors/app-error.js";
+export { AppError };
 import SystemLogBuffer from "../infrastructure/telemetry/system-log-buffer.js";
 import { AuditLog } from "../modules/audit-logs/models/audit-log.model.js";
 import { getClientIp } from "../common/utils/ip.util.js";
@@ -61,8 +62,21 @@ export function errorHandler(error, request, reply) {
     }
     // 2. Handle AppError (custom operational errors)
     if (error instanceof AppError) {
-        if (error.statusCode === 429 && error.details?.retryAfter) {
-            reply.header("Retry-After", String(error.details.retryAfter));
+        if (error.statusCode === 429) {
+            const retryAfter = error.details?.retryAfter;
+            if (retryAfter) {
+                reply.header("Retry-After", String(retryAfter));
+            }
+            return reply.status(429).send({
+                success: false,
+                statusCode: 429,
+                error: "Too Many Requests",
+                message: error.message,
+                code: error.code,
+                retryAfter,
+                ...(error.details && typeof error.details === "object" ? error.details : {}),
+                details: error.details,
+            });
         }
         return reply.status(error.statusCode).send({
             success: false,
@@ -71,6 +85,21 @@ export function errorHandler(error, request, reply) {
             code: error.code,
             ...(error.details && typeof error.details === "object" ? error.details : {}),
             details: error.details,
+        });
+    }
+    // 2b. Handle direct Fastify rate limit error (statusCode 429 / FST_ERR_RATE_LIMIT_EXCEEDED)
+    if (statusCode === 429 || error.code === "FST_ERR_RATE_LIMIT_EXCEEDED") {
+        const retryAfter = error.retryAfter || error.details?.retryAfter || error.after;
+        if (retryAfter) {
+            reply.header("Retry-After", String(retryAfter));
+        }
+        return reply.status(429).send({
+            success: false,
+            statusCode: 429,
+            error: "Too Many Requests",
+            message: error.message || "Rate limit exceeded. Too many requests.",
+            code: "RATE_LIMIT_EXCEEDED",
+            retryAfter,
         });
     }
     // 3. Handle Zod validation errors

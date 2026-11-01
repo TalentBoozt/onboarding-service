@@ -3,7 +3,11 @@ import eventBus from "../../../infrastructure/events/event-bus.js";
 import EmployeeAssignmentRepository from "../repositories/assignment.repository.js";
 import EmployeeAssignmentService from "../services/assignment.service.js";
 const assignmentService = new EmployeeAssignmentService(new EmployeeAssignmentRepository());
+let assignmentSubscribersRegistered = false;
 export function registerAssignmentSubscribers() {
+    if (assignmentSubscribersRegistered)
+        return;
+    assignmentSubscribersRegistered = true;
     const isValidId = (id) => typeof id === "string" && mongoose.Types.ObjectId.isValid(id);
     // Listen for TASK_COMPLETED
     eventBus.subscribe("TASK_COMPLETED", async (event) => {

@@ -3,6 +3,7 @@ import { UploadService } from "../services/upload.service.js";
 import { UploadRepository } from "../repositories/upload.repository.js";
 import { authenticate } from "../../../middleware/auth.middleware.js";
 import { requestUploadUrlSchema, confirmUploadSchema } from "../schemas/upload.schema.js";
+import { uploadRateLimit } from "../../../plugins/rate-limit.js";
 export async function uploadRoutes(app) {
     const repository = new UploadRepository();
     const service = new UploadService(repository);
@@ -10,9 +11,15 @@ export async function uploadRoutes(app) {
     // Authenticate all routes
     app.addHook("preHandler", authenticate);
     // POST /api/v1/uploads/request-url
-    app.post("/request-url", { schema: { body: requestUploadUrlSchema } }, controller.requestUploadUrl);
+    app.post("/request-url", {
+        config: { rateLimit: uploadRateLimit },
+        schema: { body: requestUploadUrlSchema },
+    }, controller.requestUploadUrl);
     // POST /api/v1/uploads/presigned
-    app.post("/presigned", { schema: { body: requestUploadUrlSchema } }, controller.requestUploadUrl);
+    app.post("/presigned", {
+        config: { rateLimit: uploadRateLimit },
+        schema: { body: requestUploadUrlSchema },
+    }, controller.requestUploadUrl);
     // POST /api/v1/uploads/complete
     app.post("/complete", { schema: { body: confirmUploadSchema } }, controller.confirmUpload);
     // GET /api/v1/uploads/:id
